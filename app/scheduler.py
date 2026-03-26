@@ -284,17 +284,18 @@ def schedule_habit(habit_id: int, habit_name: str, user_id: str, hour: int, minu
         existing.remove()
 
     if days:
-        trigger = CronTrigger(day_of_week=days, hour=hour, minute=minute)
+        trigger = CronTrigger(day_of_week=days, hour=hour, minute=minute, timezone=settings.timezone)
     else:
-        trigger = CronTrigger(hour=hour, minute=minute)
+        trigger = CronTrigger(hour=hour, minute=minute, timezone=settings.timezone)
 
-    scheduler.add_job(
+    job = scheduler.add_job(
         fire_habit_checkin,
         trigger=trigger,
         args=[habit_id, habit_name, user_id],
         id=job_id,
         replace_existing=True,
     )
+    logger.info("Scheduled habit %s (%s), next_run=%s", habit_name, job_id, job.next_run_time)
     return job_id
 
 
