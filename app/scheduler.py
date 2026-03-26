@@ -16,6 +16,7 @@ scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
 async def fire_reminder(reminder_id: int) -> None:
     """Called by APScheduler when a reminder is due."""
+    logger.info("fire_reminder called for reminder_id=%s", reminder_id)
     try:
         async with async_session() as session:
             reminder = await session.get(Reminder, reminder_id)
@@ -72,14 +73,15 @@ def schedule_reminder(reminder: Reminder) -> str:
             replace_existing=True,
         )
     elif reminder.remind_at:
-        trigger = DateTrigger(run_date=reminder.remind_at)
-        scheduler.add_job(
+        trigger = DateTrigger(run_date=reminder.remind_at, timezone=settings.timezone)
+        job = scheduler.add_job(
             fire_reminder,
             trigger=trigger,
             args=[reminder.id],
             id=job_id,
             replace_existing=True,
         )
+        logger.info("Scheduled one-time reminder %s, next_run=%s, trigger=%s", reminder.id, job.next_run_time, trigger)
 
     return job_id
 
