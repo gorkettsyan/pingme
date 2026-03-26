@@ -1,6 +1,6 @@
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
@@ -25,7 +25,7 @@ async def init_db() -> None:
         await _migrate(conn)
 
 
-async def _migrate(conn: "AsyncConnection") -> None:  # type: ignore[name-defined]  # noqa: F821
+async def _migrate(conn: AsyncConnection) -> None:
     """Add missing columns to existing tables. Safe to run multiple times."""
     import sqlalchemy
 

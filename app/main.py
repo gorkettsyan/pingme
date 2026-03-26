@@ -5,7 +5,7 @@ from telegram.ext import Application
 from app.bot.handlers import get_handlers
 from app.config import settings
 from app.db import init_db
-from app.scheduler import schedule_shame_check, schedule_weekly_summary, scheduler
+from app.scheduler import restore_jobs, schedule_shame_check, schedule_weekly_summary, scheduler
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -19,6 +19,7 @@ async def post_init(application: Application) -> None:  # type: ignore[type-arg]
     scheduler.start()
     schedule_weekly_summary()
     schedule_shame_check()
+    await restore_jobs()
     logger.info("Database initialized and scheduler started")
 
 

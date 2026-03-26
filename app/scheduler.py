@@ -199,6 +199,53 @@ def schedule_weekly_summary() -> None:
     logger.info("Weekly summary scheduled for every Sunday at 20:00")
 
 
+async def restore_jobs() -> None:
+    """Restore all scheduled jobs from the database after a restart."""
+    async with async_session() as session:
+        # Restore recurring reminders
+        result = await session.execute(
+            select(Reminder).where(
+                Reminder.is_active == True,  # noqa: E712
+                Reminder.is_recurring == True,  # noqa: E712
+            )
+        )
+        for (reminder,) in result.all():
+            schedule_reminder(reminder)
+            logger.info("Restored recurring reminder: %s", reminder.title)
+
+        # Restore one-time reminders that haven't fired yet
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(settings.timezone)
+        now = datetime.now(tz)
+        result = await session.execute(
+            select(Reminder).where(
+                Reminder.is_active == True,  # noqa: E712
+                Reminder.is_recurring == False,  # noqa: E712
+                Reminder.remind_at > now,
+            )
+        )
+        for (reminder,) in result.all():
+            schedule_reminder(reminder)
+            logger.info("Restored one-time reminder: %s at %s", reminder.title, reminder.remind_at)
+
+        # Restore habit reminders
+        result = await session.execute(
+            select(Habit).where(Habit.is_active == True)  # noqa: E712
+        )
+        for (habit,) in result.all():
+            if habit.reminder_time:
+                schedule_habit(
+                    habit.id, habit.name, habit.user_id,
+                    habit.reminder_time.hour, habit.reminder_time.minute,
+                    days=habit.reminder_days,
+                )
+                logger.info("Restored habit reminder: %s at %s", habit.name, habit.reminder_time)
+
+    logger.info("All jobs restored from database")
+
+
 def schedule_reminder(reminder: Reminder) -> str:
     job_id = f"reminder_{reminder.id}"
 
