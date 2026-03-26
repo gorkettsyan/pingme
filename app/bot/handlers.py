@@ -83,19 +83,18 @@ async def remind_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> ob
 
 
 async def remind_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
-    if not update.message or not update.effective_chat or not context.user_data is not None:
+    if not update.message or not update.effective_chat or context.user_data is None:
         return ConversationHandler.END
     context.user_data["remind_title"] = update.message.text  # type: ignore[index]
     await update.effective_chat.send_message(
         "When should I remind you?\n\n"
         "For a one-time reminder, send a time like:\n"
-        "  `30m` (30 minutes from now)\n"
-        "  `2h` (2 hours from now)\n"
-        "  `2025-12-31 14:00`\n\n"
+        "  30m (30 minutes from now)\n"
+        "  2h (2 hours from now)\n"
+        "  2025-12-31 14:00\n\n"
         "For recurring, send a cron expression like:\n"
-        "  `cron 0 9 * * *` (every day at 9 AM)\n"
-        "  `cron 0 9 * * mon-fri` (weekdays at 9 AM)",
-        parse_mode="Markdown",
+        "  cron 0 9 * * * (every day at 9 AM)\n"
+        "  cron 0 9 * * mon-fri (weekdays at 9 AM)",
     )
     return REMIND_TIME
 
