@@ -220,6 +220,23 @@ async def get_weekly_summary(session: AsyncSession, user_id: str) -> str:
     return "\n".join(lines)
 
 
+async def undo_complete(session: AsyncSession, habit_id: int, for_date: date | None = None) -> bool:
+    """Remove today's completion for a habit. Returns True if removed."""
+    target_date = for_date or date.today()
+    result = await session.execute(
+        select(HabitCompletion).where(
+            HabitCompletion.habit_id == habit_id,
+            HabitCompletion.date == target_date,
+        )
+    )
+    completion = result.scalar_one_or_none()
+    if completion is None:
+        return False
+    await session.delete(completion)
+    await session.commit()
+    return True
+
+
 async def delete_habit(session: AsyncSession, habit_id: int) -> bool:
     habit = await session.get(Habit, habit_id)
     if habit is None:

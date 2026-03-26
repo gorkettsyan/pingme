@@ -15,7 +15,7 @@ def habit_list_keyboard(habits: list[tuple[Habit, bool]]) -> InlineKeyboardMarku
     buttons = []
     for habit, done in habits:
         if done:
-            buttons.append([InlineKeyboardButton(f"Done: {habit.name}", callback_data=f"noop_{habit.id}")])
+            buttons.append([InlineKeyboardButton(f"✅ Undo: {habit.name}", callback_data=f"undone_{habit.id}")])
         else:
             buttons.append([InlineKeyboardButton(f"Mark done: {habit.name}", callback_data=f"done_{habit.id}")])
     return InlineKeyboardMarkup(buttons)

@@ -596,8 +596,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = str(query.from_user.id) if query.from_user else ""
     logger.info("Callback received: data=%s, user=%s", data, user_id)
 
-    if data.startswith("noop_"):
-        await query.edit_message_text("Already completed today! 💪")
+    if data.startswith("undone_"):
+        habit_id = int(data[7:])
+        async with async_session() as session:
+            removed = await habit_service.undo_complete(session, habit_id)
+            if removed:
+                habit = await habit_service.get_habit(session, habit_id)
+                name = habit.name if habit else "habit"
+                await query.edit_message_text(f"{name} unmarked. Oops happen!")
+            else:
+                await query.edit_message_text("Nothing to undo.")
         return
 
     if data.startswith("dismiss_"):
