@@ -1,0 +1,122 @@
+import json
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import httpx
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+SHAME_PROMPT = """\
+You are a witty, sarcastic accountability partner. Generate a single short funny shame message \
+for someone who hasn't done their habit "{name}" for {days} day(s).
+
+Shame level: {level}
+- gentle: light teasing, playful disappointment
+- sarcasm: witty sarcasm, passive-aggressive humor
+- dramatic: over-the-top dramatic, like a soap opera
+- nuclear: absolutely savage, no mercy (but still funny, not mean)
+
+Rules:
+- One message only, 1-2 sentences max
+- Be creative and funny, not generic
+- Reference the habit name naturally
+- Don't use emojis
+- Don't be actually hurtful, keep it fun
+
+Respond with ONLY the shame message, nothing else.\
+"""
+
+PARSE_PROMPT = """\
+You are a reminder parser. Convert natural language into a structured JSON reminder.
+
+Current date/time: {now}
+Timezone: {timezone}
+
+Return ONLY valid JSON with these fields:
+- "title": short reminder title
+- "time_type": "relative" or "absolute" or "cron"
+- "relative_minutes": number of minutes from now (for relative)
+- "absolute_time": "YYYY-MM-DD HH:MM" in user's timezone (for absolute)
+- "cron_expression": 5-field cron expression (for recurring)
+
+Examples:
+- "call mom in 30 minutes" -> {{"title": "Call mom", "time_type": "relative", "relative_minutes": 30}}
+- "take medicine every day at 9am" -> {{"title": "Take medicine", "time_type": "cron", "cron_expression": "0 9 * * *"}}
+- "meeting tomorrow at 2pm" -> {{"title": "Meeting", "time_type": "absolute", "absolute_time": "2026-03-27 14:00"}}
+- "water plants every monday and thursday at 8am" -> {{"title": "Water plants", "time_type": "cron", "cron_expression": "0 8 * * mon,thu"}}
+- "remind me every weekday at 9am to check emails" -> {{"title": "Check emails", "time_type": "cron", "cron_expression": "0 9 * * mon-fri"}}
+
+Return ONLY valid JSON, no markdown, no explanation.\
+"""
+
+
+async def _call_ollama(prompt: str, system: str = "") -> str | None:
+    """Call Ollama API. Returns None if unavailable."""
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.ollama_url}/api/generate",
+                json={
+                    "model": settings.ollama_model,
+                    "prompt": prompt,
+                    "system": system,
+                    "stream": False,
+                    "options": {"temperature": 0.8, "num_predict": 200},
+                },
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("response", "").strip()
+    except Exception:
+        logger.debug("Ollama unavailable or failed")
+        return None
+
+
+async def is_available() -> bool:
+    """Check if Ollama is running and the model is loaded."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{settings.ollama_url}/api/tags")
+            response.raise_for_status()
+            return True
+    except Exception:
+        return False
+
+
+async def generate_shame(habit_name: str, missed_days: int, level: str) -> str | None:
+    """Generate a shame message using LLM. Returns None if unavailable."""
+    prompt = SHAME_PROMPT.format(name=habit_name, days=missed_days, level=level)
+    result = await _call_ollama(prompt)
+    if result:
+        # Clean up any quotes the model might wrap the message in
+        result = result.strip('"').strip("'")
+        logger.info("LLM generated shame: %s", result)
+    return result
+
+
+async def parse_natural_language(text: str) -> dict[str, str | int | None] | None:
+    """Parse natural language reminder using LLM. Returns None if unavailable."""
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M %A")
+
+    system = PARSE_PROMPT.format(now=now, timezone=settings.timezone)
+    result = await _call_ollama(text, system=system)
+
+    if not result:
+        return None
+
+    try:
+        # Strip markdown code fences if present
+        if result.startswith("```"):
+            result = result.split("\n", 1)[1] if "\n" in result else result[3:]
+            result = result.rsplit("```", 1)[0]
+
+        parsed: dict[str, str | int | None] = json.loads(result.strip())
+        logger.info("LLM parsed: %s -> %s", text, parsed)
+        return parsed
+    except (json.JSONDecodeError, KeyError):
+        logger.warning("LLM returned invalid JSON: %s", result)
+        return None

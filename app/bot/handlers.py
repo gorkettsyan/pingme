@@ -68,6 +68,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_chat.send_message(
         "Reminder App Commands:\n\n"
         "/today - Your day at a glance\n"
+        "/ask - Smart reminder (natural language)\n"
         "/remind - Create a new reminder (guided)\n"
         "/reminders - List & delete reminders\n\n"
         "/habit - Create a new habit (guided)\n"
@@ -722,6 +723,82 @@ async def free_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     context.user_data["awaiting_whatsapp"] = False  # type: ignore[index]
 
 
+# ── /ask — natural language reminders via LLM ───────────────────────────
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+
+    from app.services.llm_service import is_available, parse_natural_language
+
+    if not await is_available():
+        await update.effective_chat.send_message("LLM is not available. Use /remind for the guided flow.")
+        return
+
+    text = (update.message.text or "").replace("/ask", "", 1).strip()
+    if not text:
+        await update.effective_chat.send_message(
+            "Tell me what to remind you about:\n\n"
+            "Examples:\n"
+            "  /ask call mom in 30 minutes\n"
+            "  /ask take medicine every day at 9am\n"
+            "  /ask meeting tomorrow at 2pm\n"
+            "  /ask water plants every monday at 8am"
+        )
+        return
+
+    await update.effective_chat.send_message("Thinking...")
+
+    parsed = await parse_natural_language(text)
+    if not parsed:
+        await update.effective_chat.send_message("Couldn't understand that. Try /remind for the guided flow.")
+        return
+
+    user_id = str(update.effective_chat.id)
+    title = str(parsed.get("title", text))
+    time_type = parsed.get("time_type")
+    tz = ZoneInfo(settings.timezone)
+
+    async with async_session() as session:
+        if time_type == "relative":
+            minutes = int(parsed.get("relative_minutes") or 5)
+            remind_at = datetime.now(tz) + timedelta(minutes=minutes)
+            reminder = await reminder_service.create_reminder(session, user_id, title, remind_at=remind_at)
+            job_id = schedule_reminder(reminder)
+            await reminder_service.update_job_id(session, reminder.id, job_id)
+            await update.effective_chat.send_message(
+                f"Reminder set: *{title}*\nAt: {remind_at.strftime('%Y-%m-%d %H:%M')}",
+                parse_mode="Markdown",
+            )
+
+        elif time_type == "absolute":
+            abs_time = str(parsed.get("absolute_time", ""))
+            try:
+                remind_at = datetime.strptime(abs_time, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except ValueError:
+                await update.effective_chat.send_message(f"Could not parse time: {abs_time}")
+                return
+            reminder = await reminder_service.create_reminder(session, user_id, title, remind_at=remind_at)
+            job_id = schedule_reminder(reminder)
+            await reminder_service.update_job_id(session, reminder.id, job_id)
+            await update.effective_chat.send_message(
+                f"Reminder set: *{title}*\nAt: {remind_at.strftime('%Y-%m-%d %H:%M')}",
+                parse_mode="Markdown",
+            )
+
+        elif time_type == "cron":
+            cron_expr = str(parsed.get("cron_expression", ""))
+            reminder = await reminder_service.create_reminder(session, user_id, title, cron_expression=cron_expr)
+            job_id = schedule_reminder(reminder)
+            await reminder_service.update_job_id(session, reminder.id, job_id)
+            await update.effective_chat.send_message(
+                f"Recurring reminder set: *{title}*\nSchedule: `{cron_expr}`",
+                parse_mode="Markdown",
+            )
+
+        else:
+            await update.effective_chat.send_message("Couldn't figure out when to remind you. Try /remind for the guided flow.")
+
+
 # ── Cancel conversation ────────────────────────────────────────────────
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
     if update.effective_chat:
@@ -760,6 +837,7 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("streak", streak_command),
         CommandHandler("edithabit", edithabit_command),
         CommandHandler("deletehabit", deletehabit_command),
+        CommandHandler("ask", ask_command),
         CommandHandler("channels", channels_command),
         CommandHandler("stats", stats_command),
         CommandHandler("shame", shame_command),

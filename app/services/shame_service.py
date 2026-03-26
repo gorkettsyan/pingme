@@ -54,10 +54,16 @@ def get_shame_level(missed_days: int) -> str:
 
 
 async def get_shame_message(session: AsyncSession, user_id: str, habit_name: str, missed_days: int) -> str:
-    """Pick a random shame message from defaults + user's custom messages."""
+    """Generate a shame message. Tries LLM first, falls back to static + custom pool."""
     level = get_shame_level(missed_days)
 
-    # Get custom messages for this user and level
+    # Try LLM-generated shame first
+    from app.services.llm_service import generate_shame
+    ai_message = await generate_shame(habit_name, missed_days, level)
+    if ai_message:
+        return ai_message
+
+    # Fallback: static defaults + custom messages
     result = await session.execute(
         select(CustomShameMessage.message).where(
             CustomShameMessage.user_id == user_id,
@@ -66,7 +72,6 @@ async def get_shame_message(session: AsyncSession, user_id: str, habit_name: str
     )
     custom = [row[0] for row in result.all()]
 
-    # Combine defaults + custom
     all_messages = DEFAULT_SHAME_MESSAGES[level] + custom
     template = random.choice(all_messages)
     return template.format(name=habit_name, days=missed_days)
