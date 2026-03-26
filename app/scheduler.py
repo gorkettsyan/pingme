@@ -11,7 +11,10 @@ from app.models import Reminder
 
 logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler(timezone=settings.timezone)
+scheduler = AsyncIOScheduler(
+    timezone=settings.timezone,
+    job_defaults={"misfire_grace_time": 300, "coalesce": True},
+)
 
 
 async def fire_reminder(reminder_id: int) -> None:
