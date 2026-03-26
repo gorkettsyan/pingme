@@ -621,8 +621,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data.startswith("done_"):
         habit_id = int(data[5:])
+        logger.info("Done button pressed for habit_id=%s", habit_id)
         async with async_session() as session:
             completion = await habit_service.mark_complete(session, habit_id)
+            logger.info("mark_complete result: %s", completion)
             if completion:
                 streak = await habit_service.get_streak(session, habit_id)
                 habit = await habit_service.get_habit(session, habit_id)
