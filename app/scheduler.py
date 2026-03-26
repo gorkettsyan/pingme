@@ -8,8 +8,10 @@ from apscheduler.triggers.date import DateTrigger
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.config import settings
+from sqlalchemy import select
+
 from app.db import async_session
-from app.models import Reminder
+from app.models import Habit, Reminder
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +109,48 @@ async def fire_habit_checkin(habit_id: int, habit_name: str, user_id: str) -> No
         logger.info("Sent habit checkin for %s to user %s", habit_name, user_id)
     except Exception:
         logger.exception("Failed to send habit checkin for %s", habit_name)
+
+
+async def send_weekly_summary() -> None:
+    """Send weekly summary to all users with habits. Runs every Sunday at 20:00."""
+    logger.info("Sending weekly summaries")
+    try:
+        from app.services.habit_service import get_weekly_summary
+
+        async with async_session() as session:
+            # Get all unique user IDs that have active habits
+            result = await session.execute(
+                select(Habit.user_id).where(Habit.is_active == True).distinct()  # noqa: E712
+            )
+            user_ids = [row[0] for row in result.all()]
+
+        bot = Bot(token=settings.telegram_bot_token)
+        async with bot:
+            for user_id in user_ids:
+                try:
+                    async with async_session() as session:
+                        summary = await get_weekly_summary(session, user_id)
+                    await bot.send_message(
+                        chat_id=int(user_id),
+                        text=summary,
+                        parse_mode="Markdown",
+                    )
+                    logger.info("Sent weekly summary to user %s", user_id)
+                except Exception:
+                    logger.exception("Failed to send weekly summary to user %s", user_id)
+    except Exception:
+        logger.exception("Failed to send weekly summaries")
+
+
+def schedule_weekly_summary() -> None:
+    """Schedule the weekly summary for every Sunday at 20:00."""
+    scheduler.add_job(
+        send_weekly_summary,
+        trigger=CronTrigger(day_of_week="sun", hour=20, minute=0),
+        id="weekly_summary",
+        replace_existing=True,
+    )
+    logger.info("Weekly summary scheduled for every Sunday at 20:00")
 
 
 def schedule_reminder(reminder: Reminder) -> str:

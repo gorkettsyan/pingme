@@ -65,11 +65,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     await update.effective_chat.send_message(
         "Reminder App Commands:\n\n"
+        "/today - Your day at a glance\n"
         "/remind - Create a new reminder (guided)\n"
         "/reminders - List & delete reminders\n\n"
         "/habit - Create a new habit (guided)\n"
         "/habits - Today's habits + mark done\n"
         "/streak - View habit streaks\n"
+        "/stats - Habit analytics + completion rates\n"
         "/deletehabit - Delete a habit\n\n"
         "/channels - Manage notification channels\n"
         "/help - Show this help"
@@ -311,6 +313,80 @@ async def streak_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.effective_chat.send_message(text)
 
 
+# ── /stats ──────────────────────────────────────────────────────────────
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        stats = await habit_service.get_habit_stats(session, user_id)
+
+    if not stats:
+        await update.effective_chat.send_message("No habits tracked yet. Use /habit to create one.")
+        return
+
+    lines = ["📊 *Habit Stats*\n"]
+    for s in stats:
+        pct = round(s.week_done / s.week_total * 100) if s.week_total > 0 else 0
+        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+        lines.append(f"*{s.name}*")
+        lines.append(f"  Week:  {bar} {s.week_done}/{s.week_total} ({pct}%)")
+        lines.append(f"  Month: {s.month_done}/{s.month_total}")
+        lines.append(f"  Streak: {s.current_streak} days (best: {s.best_streak})")
+        lines.append("")
+
+    await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
+
+
+# ── /today ──────────────────────────────────────────────────────────────
+async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(tz)
+
+    lines = [f"📅 *Today — {now.strftime('%A, %B %d')}*\n"]
+
+    # Habits
+    async with async_session() as session:
+        status = await habit_service.get_today_status(session, user_id)
+        reminders = await reminder_service.list_reminders(session, user_id)
+
+    if status:
+        done_count = sum(1 for _, done in status if done)
+        lines.append(f"*Habits* ({done_count}/{len(status)})")
+        for habit, done in status:
+            mark = "✅" if done else "⬜"
+            lines.append(f"  {mark} {habit.name}")
+        lines.append("")
+
+    # Reminders
+    today_reminders = []
+    for r in reminders:
+        if r.remind_at and r.remind_at.date() == now.date():
+            today_reminders.append(r)
+        elif r.is_recurring:
+            today_reminders.append(r)
+
+    if today_reminders:
+        lines.append("*Reminders*")
+        for r in today_reminders:
+            if r.is_recurring:
+                lines.append(f"  🔁 {r.title}")
+            else:
+                time_str = r.remind_at.strftime("%H:%M") if r.remind_at else ""
+                lines.append(f"  🔔 {r.title} at {time_str}")
+        lines.append("")
+
+    if not status and not today_reminders:
+        lines.append("Nothing scheduled for today.")
+
+    keyboard = habit_list_keyboard(status) if status else None
+    await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown", reply_markup=keyboard)
+
+
 # ── /deletehabit ────────────────────────────────────────────────────────
 async def deletehabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -494,6 +570,8 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("streak", streak_command),
         CommandHandler("deletehabit", deletehabit_command),
         CommandHandler("channels", channels_command),
+        CommandHandler("stats", stats_command),
+        CommandHandler("today", today_command),
         CallbackQueryHandler(button_callback),
         MessageHandler(filters.TEXT & ~filters.COMMAND, whatsapp_phone_handler),
     ]
