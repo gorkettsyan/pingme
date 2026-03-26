@@ -4,13 +4,14 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
+from app.config import settings
 from app.db import async_session
 from app.models import Reminder
 from app.notifier import send_notification
 
 logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
 
 async def fire_reminder(reminder_id: int) -> None:

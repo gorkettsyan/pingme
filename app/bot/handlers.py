@@ -41,7 +41,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         channels = await get_user_channels(session, user_id)
         has_telegram = any(c.channel_type == "telegram" for c in channels)
         if not has_telegram:
-            apprise_url = f"tgram://{settings.telegram_bot_token}/{user_id}"
+            bot_id, bot_token = settings.telegram_bot_token.split(":", 1)
+            apprise_url = f"tgram://{bot_id}/{bot_token}/{user_id}"
             await add_channel(session, user_id, "telegram", apprise_url)
 
     await update.effective_chat.send_message(
