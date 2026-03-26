@@ -111,6 +111,52 @@ async def fire_habit_checkin(habit_id: int, habit_name: str, user_id: str) -> No
         logger.exception("Failed to send habit checkin for %s", habit_name)
 
 
+async def send_shame_check() -> None:
+    """Check all habits with shame enabled and roast users who didn't complete them."""
+    logger.info("Running shame check")
+    try:
+        from app.services.shame_service import get_shame_message, get_shameable_habits
+
+        async with async_session() as session:
+            # Get all unique user IDs with active shame habits
+            result = await session.execute(
+                select(Habit.user_id)
+                .where(Habit.is_active == True, Habit.shame_enabled == True)  # noqa: E712
+                .distinct()
+            )
+            user_ids = [row[0] for row in result.all()]
+
+        bot = Bot(token=settings.telegram_bot_token)
+        async with bot:
+            for user_id in user_ids:
+                try:
+                    async with async_session() as session:
+                        shameable = await get_shameable_habits(session, user_id)
+
+                        for habit, missed_days in shameable:
+                            message = await get_shame_message(session, user_id, habit.name, missed_days)
+                            await bot.send_message(
+                                chat_id=int(user_id),
+                                text=f"😈 {message}",
+                            )
+                            logger.info("Shamed user %s for habit %s (%s days)", user_id, habit.name, missed_days)
+                except Exception:
+                    logger.exception("Failed to shame user %s", user_id)
+    except Exception:
+        logger.exception("Failed to run shame check")
+
+
+def schedule_shame_check() -> None:
+    """Schedule the shame check for every day at 21:00."""
+    scheduler.add_job(
+        send_shame_check,
+        trigger=CronTrigger(hour=21, minute=0),
+        id="shame_check",
+        replace_existing=True,
+    )
+    logger.info("Shame check scheduled for every day at 21:00")
+
+
 async def send_weekly_summary() -> None:
     """Send weekly summary to all users with habits. Runs every Sunday at 20:00."""
     logger.info("Sending weekly summaries")

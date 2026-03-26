@@ -29,6 +29,14 @@ def habit_delete_keyboard(habits: list[Habit]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def shame_toggle_keyboard(habits: list[Habit]) -> InlineKeyboardMarkup:
+    buttons = []
+    for h in habits:
+        icon = "🔕 Disable" if h.shame_enabled else "😈 Enable"
+        buttons.append([InlineKeyboardButton(f"{icon}: {h.name}", callback_data=f"shame_{h.id}")])
+    return InlineKeyboardMarkup(buttons)
+
+
 def channel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Add WhatsApp", callback_data="add_whatsapp")],

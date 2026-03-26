@@ -32,6 +32,7 @@ class Habit(Base):
     reminder_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     reminder_days: Mapped[str | None] = mapped_column(String(50), nullable=True)  # e.g. "mon,wed,fri"
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    shame_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     apscheduler_job_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -48,6 +49,16 @@ class HabitCompletion(Base):
     date: Mapped[date] = mapped_column(Date)
 
     habit: Mapped["Habit"] = relationship(back_populates="completions")
+
+
+class CustomShameMessage(Base):
+    __tablename__ = "custom_shame_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(100), index=True)
+    level: Mapped[str] = mapped_column(String(20))  # gentle, sarcasm, dramatic, nuclear
+    message: Mapped[str] = mapped_column(Text)  # Use {name} and {days} as placeholders
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class NotificationChannel(Base):

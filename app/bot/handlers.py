@@ -22,6 +22,7 @@ from app.db import async_session
 from app.notifier import add_channel, get_user_channels, remove_channel
 from app.scheduler import cancel_job, dismiss_reminder, schedule_habit, schedule_reminder, snooze_reminder
 from app.services import habit_service, reminder_service
+from app.services.shame_service import VALID_LEVELS, add_custom_shame, delete_custom_shame, list_custom_shames, toggle_shame
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/habits - Today's habits + mark done\n"
         "/streak - View habit streaks\n"
         "/stats - Habit analytics + completion rates\n"
+        "/shame - Toggle shame mode per habit\n"
+        "/addshame - Add custom shame message\n"
+        "/myshames - List your custom messages\n"
         "/deletehabit - Delete a habit\n\n"
         "/channels - Manage notification channels\n"
         "/help - Show this help"
@@ -387,6 +391,115 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown", reply_markup=keyboard)
 
 
+# ── /shame ──────────────────────────────────────────────────────────────
+async def shame_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        habits = await habit_service.list_habits(session, user_id)
+
+    if not habits:
+        await update.effective_chat.send_message("No habits yet. Use /habit to create one.")
+        return
+
+    from app.bot.keyboards import shame_toggle_keyboard
+    lines = ["😈 *Shame Mode*\n", "Toggle shaming per habit:\n"]
+    for h in habits:
+        status = "ON" if h.shame_enabled else "OFF"
+        lines.append(f"  {h.name}: {status}")
+
+    keyboard = shame_toggle_keyboard(habits)
+    await update.effective_chat.send_message("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+
+
+# ── /addshame — add custom shame message ────────────────────────────────
+async def addshame_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+
+    text = (update.message.text or "").replace("/addshame", "", 1).strip()
+    if not text:
+        levels = ", ".join(VALID_LEVELS)
+        await update.effective_chat.send_message(
+            "Add a custom shame message:\n\n"
+            f"/addshame <level> <message>\n\n"
+            f"Levels: {levels}\n\n"
+            "Use {name} for the habit name and {days} for missed days.\n\n"
+            "Examples:\n"
+            "  /addshame gentle Hey, '{name}' is lonely without you\n"
+            "  /addshame nuclear {days} days! '{name}' has left the chat permanently"
+        )
+        return
+
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2:
+        await update.effective_chat.send_message("Usage: /addshame <level> <message>")
+        return
+
+    level = parts[0].lower()
+    message = parts[1]
+
+    if level not in VALID_LEVELS:
+        levels = ", ".join(VALID_LEVELS)
+        await update.effective_chat.send_message(f"Invalid level. Choose from: {levels}")
+        return
+
+    user_id = str(update.effective_chat.id)
+    async with async_session() as session:
+        await add_custom_shame(session, user_id, level, message)
+
+    await update.effective_chat.send_message(f"Added custom *{level}* shame message!", parse_mode="Markdown")
+
+
+# ── /myshames — list custom shame messages ──────────────────────────────
+async def myshames_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        messages = await list_custom_shames(session, user_id)
+
+    if not messages:
+        await update.effective_chat.send_message("No custom shame messages yet. Use /addshame to add one.")
+        return
+
+    lines = ["Your custom shame messages:\n"]
+    for msg in messages:
+        lines.append(f"  [{msg.level}] {msg.message}")
+        lines.append(f"  Delete: /delshame {msg.id}")
+        lines.append("")
+
+    await update.effective_chat.send_message("\n".join(lines))
+
+
+# ── /delshame — delete custom shame message ─────────────────────────────
+async def delshame_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+
+    text = (update.message.text or "").replace("/delshame", "", 1).strip()
+    if not text:
+        await update.effective_chat.send_message("Usage: /delshame <id>\nUse /myshames to see your messages and their IDs.")
+        return
+
+    try:
+        message_id = int(text)
+    except ValueError:
+        await update.effective_chat.send_message("Invalid ID. Use /myshames to see your messages.")
+        return
+
+    async with async_session() as session:
+        deleted = await delete_custom_shame(session, message_id)
+
+    if deleted:
+        await update.effective_chat.send_message("Shame message deleted.")
+    else:
+        await update.effective_chat.send_message("Message not found.")
+
+
 # ── /deletehabit ────────────────────────────────────────────────────────
 async def deletehabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -473,6 +586,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 cancel_job(habit.apscheduler_job_id)
             await habit_service.delete_habit(session, habit_id)
         await query.edit_message_text("Habit deleted.")
+
+    elif data.startswith("shame_"):
+        habit_id = int(data[6:])
+        async with async_session() as session:
+            new_state = await toggle_shame(session, habit_id)
+            if new_state is not None:
+                habit = await habit_service.get_habit(session, habit_id)
+                name = habit.name if habit else "habit"
+                emoji = "😈" if new_state else "😇"
+                state_text = "enabled" if new_state else "disabled"
+                await query.edit_message_text(f"{emoji} Shame mode *{state_text}* for *{name}*", parse_mode="Markdown")
+            else:
+                await query.edit_message_text("Habit not found.")
 
     elif data == "add_whatsapp":
         if not update.effective_chat:
@@ -571,6 +697,10 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("deletehabit", deletehabit_command),
         CommandHandler("channels", channels_command),
         CommandHandler("stats", stats_command),
+        CommandHandler("shame", shame_command),
+        CommandHandler("addshame", addshame_command),
+        CommandHandler("myshames", myshames_command),
+        CommandHandler("delshame", delshame_command),
         CommandHandler("today", today_command),
         CallbackQueryHandler(button_callback),
         MessageHandler(filters.TEXT & ~filters.COMMAND, whatsapp_phone_handler),
