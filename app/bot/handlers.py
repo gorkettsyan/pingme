@@ -634,6 +634,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     praise = await generate_praise(name, streak)
                     await query.edit_message_text(f"{base_msg}\n\n🎉 {praise}")
                 except Exception:
+                    logger.exception("Praise generation failed")
                     await query.edit_message_text(base_msg)
             else:
                 await query.edit_message_text("Already completed today!")

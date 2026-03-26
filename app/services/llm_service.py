@@ -55,10 +55,10 @@ Return ONLY valid JSON, no markdown, no explanation.\
 """
 
 
-async def _call_ollama(prompt: str, system: str = "", temperature: float = 0.7) -> str | None:
+async def _call_ollama(prompt: str, system: str = "", temperature: float = 0.7, timeout: float = 30.0) -> str | None:
     """Call Ollama API. Returns None if unavailable."""
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{settings.ollama_url}/api/generate",
                 json={
@@ -158,9 +158,10 @@ async def generate_praise(habit_name: str, streak: int) -> str:
     """Generate a praise message. Tries LLM first, falls back to static."""
     import random
 
-    # Try LLM first
+    # Try LLM first (short timeout for interactive use)
     prompt = PRAISE_PROMPT.format(name=habit_name, streak=streak)
-    result = await _call_ollama(prompt, temperature=0.9)
+    logger.info("Generating praise for %s (streak: %s)", habit_name, streak)
+    result = await _call_ollama(prompt, temperature=0.9, timeout=15.0)
     if result:
         result = result.strip('"').strip("'")
         logger.info("LLM generated praise: %s", result)
