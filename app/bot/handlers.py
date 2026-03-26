@@ -20,7 +20,7 @@ from app.bot.keyboards import (
 from app.config import settings
 from app.db import async_session
 from app.notifier import add_channel, get_user_channels, remove_channel
-from app.scheduler import cancel_job, schedule_habit, schedule_reminder
+from app.scheduler import cancel_job, dismiss_reminder, schedule_habit, schedule_reminder, snooze_reminder
 from app.services import habit_service, reminder_service
 
 logger = logging.getLogger(__name__)
@@ -353,7 +353,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     data = query.data
     user_id = str(query.from_user.id) if query.from_user else ""
 
-    if data.startswith("del_rem_"):
+    if data.startswith("dismiss_"):
+        reminder_id = int(data[8:])
+        dismiss_reminder(reminder_id)
+        async with async_session() as session:
+            await reminder_service.deactivate_reminder(session, reminder_id)
+        await query.edit_message_text("Reminder dismissed.")
+
+    elif data.startswith("snooze_"):
+        # Format: snooze_5_123 or snooze_15_123
+        parts = data.split("_")
+        minutes = int(parts[1])
+        reminder_id = int(parts[2])
+        snooze_reminder(reminder_id, minutes)
+        await query.edit_message_text(f"Snoozed for {minutes} minutes.")
+
+    elif data.startswith("del_rem_"):
         reminder_id = int(data[8:])
         async with async_session() as session:
             reminder = await reminder_service.get_reminder(session, reminder_id)
