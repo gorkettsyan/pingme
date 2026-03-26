@@ -99,6 +99,127 @@ async def generate_shame(habit_name: str, missed_days: int, level: str) -> str |
     return result
 
 
+PRAISE_PROMPT = """\
+Someone just completed their habit "{name}"! Their current streak is {streak} day(s).
+
+Write a short, enthusiastic congratulatory message. Be creative and fun.
+
+Style based on streak:
+- 1-3 days: encouraging, "good start" energy
+- 4-7 days: excited, building momentum
+- 8-14 days: impressed, they're on fire
+- 15-30 days: amazed, legendary status
+- 30+ days: worship them, they're a machine
+
+Rules:
+- ONE message, 1-2 sentences max
+- Be ORIGINAL and creative each time
+- Reference the habit name and streak naturally
+- Be genuinely encouraging, not sarcastic
+- No emojis. Output ONLY the message.\
+"""
+
+DEFAULT_PRAISE: dict[str, list[str]] = {
+    "starter": [
+        "You showed up for '{name}' today. That's what winners do.",
+        "Day {streak} of '{name}' in the bag. The hardest part is starting, and you did it.",
+        "'{name}' done. Small steps, big results. Keep going.",
+    ],
+    "building": [
+        "{streak} days of '{name}'! You're building something here.",
+        "'{name}' streak at {streak} days. Momentum is a beautiful thing.",
+        "Look at you, {streak} days strong on '{name}'. This is becoming a habit for real.",
+    ],
+    "impressive": [
+        "{streak} days of '{name}'! You're officially unstoppable.",
+        "'{name}' for {streak} days straight? That's not luck, that's discipline.",
+        "{streak} days! '{name}' isn't a habit anymore, it's who you are.",
+    ],
+    "legendary": [
+        "{streak} days of '{name}'. You're not human, you're a machine.",
+        "'{name}' for {streak} days? Someone call the record books.",
+        "{streak} days! At this point '{name}' should be paying YOU.",
+    ],
+}
+
+
+def _get_praise_level(streak: int) -> str:
+    if streak <= 3:
+        return "starter"
+    elif streak <= 7:
+        return "building"
+    elif streak <= 14:
+        return "impressive"
+    else:
+        return "legendary"
+
+
+async def generate_praise(habit_name: str, streak: int) -> str:
+    """Generate a praise message. Tries LLM first, falls back to static."""
+    import random
+
+    # Try LLM first
+    prompt = PRAISE_PROMPT.format(name=habit_name, streak=streak)
+    result = await _call_ollama(prompt, temperature=0.9)
+    if result:
+        result = result.strip('"').strip("'")
+        logger.info("LLM generated praise: %s", result)
+        return result
+
+    # Fallback to static
+    level = _get_praise_level(streak)
+    template = random.choice(DEFAULT_PRAISE[level])
+    return template.format(name=habit_name, streak=streak)
+
+
+ROUTER_PROMPT = """\
+You are a smart assistant for a reminder and habit tracking bot. \
+Classify the user's message into one of these intents:
+
+- "reminder": user wants to create a reminder (e.g. "remind me to call mom tomorrow", "buy groceries in 30 min")
+- "habit_done": user is saying they completed a habit (e.g. "I did my exercise", "finished reading")
+- "question": user is asking a question or wants information (e.g. "what habits do I have?", "how many days is my streak?")
+- "chat": user is just chatting, greeting, or saying something unrelated
+
+Return ONLY a JSON object with:
+- "intent": one of "reminder", "habit_done", "question", "chat"
+- "response": a short helpful response for "question" or "chat" intents (1-2 sentences)
+- "habit_name": the habit name if intent is "habit_done" (or null)
+
+For "reminder" intent, set response to null — the reminder parser will handle it.
+
+The user has these habits: {habits}
+Current date/time: {now}
+
+Return ONLY valid JSON, no markdown.\
+"""
+
+
+async def classify_intent(text: str, habits: list[str]) -> dict[str, str | None] | None:
+    """Classify user message intent. Returns None if LLM unavailable."""
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M %A")
+    habits_str = ", ".join(habits) if habits else "none yet"
+
+    system = ROUTER_PROMPT.format(habits=habits_str, now=now)
+    result = await _call_ollama(text, system=system, temperature=0.1)
+
+    if not result:
+        return None
+
+    try:
+        if result.startswith("```"):
+            result = result.split("\n", 1)[1] if "\n" in result else result[3:]
+            result = result.rsplit("```", 1)[0]
+
+        parsed: dict[str, str | None] = json.loads(result.strip())
+        logger.info("LLM classified: %s -> %s", text, parsed)
+        return parsed
+    except (json.JSONDecodeError, KeyError):
+        logger.warning("LLM returned invalid classification: %s", result)
+        return None
+
+
 async def parse_natural_language(text: str) -> dict[str, str | int | None] | None:
     """Parse natural language reminder using LLM. Returns None if unavailable."""
     tz = ZoneInfo(settings.timezone)
