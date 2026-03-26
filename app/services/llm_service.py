@@ -10,23 +10,18 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 SHAME_PROMPT = """\
-You are a witty, sarcastic accountability partner. Generate a single short funny shame message \
-for someone who hasn't done their habit "{name}" for {days} day(s).
+Write a funny roast about someone who skipped their habit "{name}" for {days} days.
+Level: {level}
 
-Shame level: {level}
-- gentle: light teasing, playful disappointment
-- sarcasm: witty sarcasm, passive-aggressive humor
-- dramatic: over-the-top dramatic, like a soap opera
-- nuclear: absolutely savage, no mercy (but still funny, not mean)
+Example outputs for each level:
+- gentle: "Your habit '{name}' is starting to think you forgot it exists."
+- sarcasm: "Day {days} without '{name}'. Your couch must be thrilled."
+- dramatic: "'{name}' has filed a missing person report for your discipline."
+- nuclear: "I showed your '{name}' log to a therapist. They cried."
 
-Rules:
-- One message only, 1-2 sentences max
-- Be creative and funny, not generic
-- Reference the habit name naturally
-- Don't use emojis
-- Don't be actually hurtful, keep it fun
-
-Respond with ONLY the shame message, nothing else.\
+Write ONE message at the "{level}" level. Be funny and mean, not supportive. \
+Do NOT apologize. Do NOT offer help. Do NOT be nice. Mock them. \
+Output ONLY the roast message, nothing else.\
 """
 
 PARSE_PROMPT = """\
