@@ -10,18 +10,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 SHAME_PROMPT = """\
-Write a funny roast about someone who skipped their habit "{name}" for {days} days.
-Level: {level}
+You are a savage comedy roast writer. Someone skipped "{name}" for {days} days. \
+Write an original, unique, funny roast at the "{level}" level.
 
-Example outputs for each level:
-- gentle: "Your habit '{name}' is starting to think you forgot it exists."
-- sarcasm: "Day {days} without '{name}'. Your couch must be thrilled."
-- dramatic: "'{name}' has filed a missing person report for your discipline."
-- nuclear: "I showed your '{name}' log to a therapist. They cried."
+Levels explained:
+- gentle = playful teasing
+- sarcasm = passive-aggressive wit
+- dramatic = soap opera melodrama
+- nuclear = absolutely ruthless mockery
 
-Write ONE message at the "{level}" level. Be funny and mean, not supportive. \
-Do NOT apologize. Do NOT offer help. Do NOT be nice. Mock them. \
-Output ONLY the roast message, nothing else.\
+Rules:
+- Write ONE short roast (1-2 sentences)
+- Be ORIGINAL. Do not copy examples. Create something NEW
+- Mock their laziness, not them as a person
+- No emojis. No apologies. No encouragement. Just roast them.
+- Output ONLY the roast, nothing else\
 """
 
 PARSE_PROMPT = """\
