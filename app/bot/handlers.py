@@ -596,6 +596,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = str(query.from_user.id) if query.from_user else ""
     logger.info("Callback received: data=%s, user=%s", data, user_id)
 
+    if data.startswith("noop_"):
+        await query.edit_message_text("Already completed today! 💪")
+        return
+
     if data.startswith("dismiss_"):
         reminder_id = int(data[8:])
         dismiss_reminder(reminder_id)
