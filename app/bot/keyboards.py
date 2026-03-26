@@ -37,6 +37,16 @@ def shame_toggle_keyboard(habits: list[Habit]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def habit_edit_keyboard(habits: list[Habit]) -> InlineKeyboardMarkup:
+    buttons = []
+    for h in habits:
+        time_str = h.reminder_time.strftime("%H:%M") if h.reminder_time else "not set"
+        buttons.append([InlineKeyboardButton(
+            f"{h.name} ({time_str})", callback_data=f"edit_hab_{h.id}"
+        )])
+    return InlineKeyboardMarkup(buttons)
+
+
 def channel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Add WhatsApp", callback_data="add_whatsapp")],

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 REMIND_TITLE, REMIND_TIME, REMIND_CRON = range(3)
 HABIT_NAME, HABIT_FREQUENCY, HABIT_TIME = range(3, 6)
 WHATSAPP_PHONE = 6
+EDIT_HABIT_TIME = 7
 
 
 # ── /start ──────────────────────────────────────────────────────────────
@@ -73,6 +74,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/habits - Today's habits + mark done\n"
         "/streak - View habit streaks\n"
         "/stats - Habit analytics + completion rates\n"
+        "/edithabit - Change habit reminder time\n"
         "/shame - Toggle shame mode per habit\n"
         "/addshame - Add custom shame message\n"
         "/myshames - List your custom messages\n"
@@ -500,6 +502,24 @@ async def delshame_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.effective_chat.send_message("Message not found.")
 
 
+# ── /edithabit ──────────────────────────────────────────────────────────
+async def edithabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        habits = await habit_service.list_habits(session, user_id)
+
+    if not habits:
+        await update.effective_chat.send_message("No habits yet.")
+        return
+
+    from app.bot.keyboards import habit_edit_keyboard
+    keyboard = habit_edit_keyboard(habits)
+    await update.effective_chat.send_message("Select a habit to edit its reminder time:", reply_markup=keyboard)
+
+
 # ── /deletehabit ────────────────────────────────────────────────────────
 async def deletehabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -600,6 +620,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             else:
                 await query.edit_message_text("Habit not found.")
 
+    elif data.startswith("edit_hab_"):
+        habit_id = int(data[9:])
+        if context.user_data is not None:
+            context.user_data["editing_habit_id"] = habit_id  # type: ignore[index]
+        await query.edit_message_text(f"Send the new reminder time (e.g. `09:00` or `18:30`):")
+
     elif data == "add_whatsapp":
         if not update.effective_chat:
             return
@@ -624,14 +650,52 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("No channels configured. Use /start to set up Telegram.")
 
 
-# ── WhatsApp phone number handler ──────────────────────────────────────
-async def whatsapp_phone_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ── Free text handler (edit habit time, whatsapp phone) ─────────────────
+async def free_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_chat or context.user_data is None:
-        return
-    if not context.user_data.get("awaiting_whatsapp"):  # type: ignore[union-attr]
         return
 
     text = (update.message.text or "").strip()
+
+    # Handle edit habit time
+    editing_id = context.user_data.get("editing_habit_id")  # type: ignore[union-attr]
+    if editing_id is not None:
+        try:
+            parts = text.split(":")
+            new_time = time(int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            await update.effective_chat.send_message("Invalid time format. Use HH:MM (e.g. `09:00`).")
+            return
+
+        user_id = str(update.effective_chat.id)
+        async with async_session() as session:
+            habit = await habit_service.get_habit(session, editing_id)
+            if habit:
+                habit.reminder_time = new_time
+                await session.commit()
+                # Reschedule
+                if habit.apscheduler_job_id:
+                    cancel_job(habit.apscheduler_job_id)
+                job_id = schedule_habit(
+                    habit.id, habit.name, user_id,
+                    new_time.hour, new_time.minute,
+                    days=habit.reminder_days,
+                )
+                await habit_service.update_job_id(session, habit.id, job_id)
+                await update.effective_chat.send_message(
+                    f"Updated *{habit.name}* reminder to {new_time.strftime('%H:%M')}",
+                    parse_mode="Markdown",
+                )
+            else:
+                await update.effective_chat.send_message("Habit not found.")
+
+        context.user_data["editing_habit_id"] = None  # type: ignore[index]
+        return
+
+    # Handle WhatsApp phone number
+    if not context.user_data.get("awaiting_whatsapp"):  # type: ignore[union-attr]
+        return
+
     if not text.startswith("+"):
         await update.effective_chat.send_message("Please send your phone number with country code (e.g. +1234567890)")
         return
@@ -694,6 +758,7 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("reminders", reminders_command),
         CommandHandler("habits", habits_command),
         CommandHandler("streak", streak_command),
+        CommandHandler("edithabit", edithabit_command),
         CommandHandler("deletehabit", deletehabit_command),
         CommandHandler("channels", channels_command),
         CommandHandler("stats", stats_command),
@@ -703,5 +768,5 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("delshame", delshame_command),
         CommandHandler("today", today_command),
         CallbackQueryHandler(button_callback),
-        MessageHandler(filters.TEXT & ~filters.COMMAND, whatsapp_phone_handler),
+        MessageHandler(filters.TEXT & ~filters.COMMAND, free_text_handler),
     ]
