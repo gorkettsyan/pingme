@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - db-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///data/reminder_app.db
+
+volumes:
+  db-data:
