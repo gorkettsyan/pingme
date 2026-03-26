@@ -3,11 +3,11 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from telegram import Bot
 
 from app.config import settings
 from app.db import async_session
 from app.models import Reminder
-from app.notifier import send_notification
 
 logger = logging.getLogger(__name__)
 
@@ -16,32 +16,42 @@ scheduler = AsyncIOScheduler(timezone=settings.timezone)
 
 async def fire_reminder(reminder_id: int) -> None:
     """Called by APScheduler when a reminder is due."""
-    async with async_session() as session:
-        reminder = await session.get(Reminder, reminder_id)
-        if reminder is None or not reminder.is_active:
-            return
+    try:
+        async with async_session() as session:
+            reminder = await session.get(Reminder, reminder_id)
+            if reminder is None or not reminder.is_active:
+                logger.warning("Reminder %s not found or inactive", reminder_id)
+                return
 
-        await send_notification(
-            session,
-            reminder.user_id,
-            f"Reminder: {reminder.title}",
-            reminder.description or reminder.title,
-        )
+            bot = Bot(token=settings.telegram_bot_token)
+            async with bot:
+                await bot.send_message(
+                    chat_id=int(reminder.user_id),
+                    text=f"🔔 *Reminder: {reminder.title}*\n{reminder.description or ''}",
+                    parse_mode="Markdown",
+                )
+            logger.info("Sent reminder %s to user %s", reminder.title, reminder.user_id)
 
-        if not reminder.is_recurring:
-            reminder.is_active = False
-            await session.commit()
+            if not reminder.is_recurring:
+                reminder.is_active = False
+                await session.commit()
+    except Exception:
+        logger.exception("Failed to fire reminder %s", reminder_id)
 
 
 async def fire_habit_checkin(habit_id: int, habit_name: str, user_id: str) -> None:
     """Called by APScheduler to send habit check-in reminders."""
-    async with async_session() as session:
-        await send_notification(
-            session,
-            user_id,
-            f"Habit Check-in: {habit_name}",
-            f"Time to work on: {habit_name}\nUse /done {habit_name} to mark it complete!",
-        )
+    try:
+        bot = Bot(token=settings.telegram_bot_token)
+        async with bot:
+            await bot.send_message(
+                chat_id=int(user_id),
+                text=f"📋 *Habit Check-in: {habit_name}*\nTime to work on it! Use /habits to mark it done.",
+                parse_mode="Markdown",
+            )
+        logger.info("Sent habit checkin for %s to user %s", habit_name, user_id)
+    except Exception:
+        logger.exception("Failed to send habit checkin for %s", habit_name)
 
 
 def schedule_reminder(reminder: Reminder) -> str:
