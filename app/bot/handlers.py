@@ -521,6 +521,38 @@ async def edithabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.effective_chat.send_message("Select a habit to edit its reminder time:", reply_markup=keyboard)
 
 
+# ── /testshame — generate a shame message for testing ───────────────────
+async def testshame_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+
+    text = (update.message.text or "").replace("/testshame", "", 1).strip()
+    if not text:
+        await update.effective_chat.send_message(
+            "Usage: /testshame <habit_name> <missed_days>\n\n"
+            "Example: /testshame Exercise 5"
+        )
+        return
+
+    parts = text.rsplit(maxsplit=1)
+    habit_name = parts[0]
+    try:
+        missed_days = int(parts[1]) if len(parts) > 1 else 3
+    except ValueError:
+        missed_days = 3
+
+    from app.services.shame_service import get_shame_level, get_shame_message
+    level = get_shame_level(missed_days)
+
+    user_id = str(update.effective_chat.id)
+    async with async_session() as session:
+        message = await get_shame_message(session, user_id, habit_name, missed_days)
+
+    await update.effective_chat.send_message(
+        f"😈 [{level}, {missed_days} days missed]\n\n{message}"
+    )
+
+
 # ── /deletehabit ────────────────────────────────────────────────────────
 async def deletehabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -836,6 +868,7 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("habits", habits_command),
         CommandHandler("streak", streak_command),
         CommandHandler("edithabit", edithabit_command),
+        CommandHandler("testshame", testshame_command),
         CommandHandler("deletehabit", deletehabit_command),
         CommandHandler("ask", ask_command),
         CommandHandler("channels", channels_command),
