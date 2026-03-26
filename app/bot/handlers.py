@@ -627,15 +627,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 streak = await habit_service.get_streak(session, habit_id)
                 habit = await habit_service.get_habit(session, habit_id)
                 name = habit.name if habit else "habit"
-                # Generate praise
-                from app.services.llm_service import generate_praise
-                praise = await generate_praise(name, streak)
-                await query.edit_message_text(
-                    f"*{name}* marked done!\n"
-                    f"Current streak: {streak} day{'s' if streak != 1 else ''}\n\n"
-                    f"🎉 {praise}",
-                    parse_mode="Markdown",
-                )
+                base_msg = f"{name} marked done!\nCurrent streak: {streak} day{'s' if streak != 1 else ''}"
+                # Generate praise (non-blocking — don't let it break the flow)
+                try:
+                    from app.services.llm_service import generate_praise
+                    praise = await generate_praise(name, streak)
+                    await query.edit_message_text(f"{base_msg}\n\n🎉 {praise}")
+                except Exception:
+                    await query.edit_message_text(base_msg)
             else:
                 await query.edit_message_text("Already completed today!")
 
@@ -835,16 +834,15 @@ async def free_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                         completion = await habit_service.mark_complete(session, h.id)
                         if completion:
                             streak = await habit_service.get_streak(session, h.id)
-                            from app.services.llm_service import generate_praise
-                            praise = await generate_praise(h.name, streak)
-                            await update.effective_chat.send_message(
-                                f"*{h.name}* marked done!\n"
-                                f"Current streak: {streak} day{'s' if streak != 1 else ''}\n\n"
-                                f"🎉 {praise}",
-                                parse_mode="Markdown",
-                            )
+                            base_msg = f"{h.name} marked done!\nCurrent streak: {streak} day{'s' if streak != 1 else ''}"
+                            try:
+                                from app.services.llm_service import generate_praise
+                                praise = await generate_praise(h.name, streak)
+                                await update.effective_chat.send_message(f"{base_msg}\n\n🎉 {praise}")
+                            except Exception:
+                                await update.effective_chat.send_message(base_msg)
                         else:
-                            await update.effective_chat.send_message(f"*{h.name}* already done today!", parse_mode="Markdown")
+                            await update.effective_chat.send_message(f"{h.name} already done today!")
                         return
             await update.effective_chat.send_message("Couldn't find that habit. Use /habits to see your list.")
 
