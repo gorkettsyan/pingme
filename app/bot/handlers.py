@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import (
@@ -138,7 +139,8 @@ async def remind_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> obj
 
 def _parse_time(text: str) -> datetime | None:
     text = text.strip().lower()
-    now = datetime.now()
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(tz)
 
     if text.endswith("m"):
         try:
@@ -155,7 +157,8 @@ def _parse_time(text: str) -> datetime | None:
     else:
         for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M"):
             try:
-                return datetime.strptime(text, fmt)
+                dt = datetime.strptime(text, fmt)
+                return dt.replace(tzinfo=tz)
             except ValueError:
                 continue
     return None
