@@ -51,11 +51,12 @@ def goal_list_keyboard(goals: list[tuple[Goal, int, int]]) -> InlineKeyboardMark
     """Keyboard for /goals: log progress or view details."""
     buttons = []
     for goal, today_count, total in goals:
-        pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
-        buttons.append([InlineKeyboardButton(
-            f"+{goal.daily_quota}: {goal.name} ({total}/{goal.target_count} — {pct}%)",
-            callback_data=f"goal_log_{goal.id}",
-        )])
+        if goal.target_count:
+            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+            label = f"+{goal.daily_quota}: {goal.name} ({total}/{goal.target_count} — {pct}%)"
+        else:
+            label = f"+{goal.daily_quota} {goal.unit}: {goal.name}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"goal_log_{goal.id}")])
     return InlineKeyboardMarkup(buttons)
 
 

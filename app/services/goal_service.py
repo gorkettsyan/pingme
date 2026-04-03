@@ -12,8 +12,9 @@ async def create_goal(
     session: AsyncSession,
     user_id: str,
     name: str,
-    target_count: int,
+    target_count: int | None = None,
     daily_quota: int = 1,
+    unit: str = "times",
     deadline: date | None = None,
     reminder_time: time | None = None,
     description: str | None = None,
@@ -24,6 +25,7 @@ async def create_goal(
         description=description,
         target_count=target_count,
         daily_quota=daily_quota,
+        unit=unit,
         deadline=deadline,
         reminder_time=reminder_time,
         is_active=True,
@@ -133,6 +135,34 @@ async def get_streak(session: AsyncSession, goal_id: int) -> int:
     return streak
 
 
+async def get_days_active_count(session: AsyncSession, goal_id: int) -> int:
+    """Count distinct days with any progress logged."""
+    result = await session.execute(
+        select(func.count(func.distinct(GoalProgress.date))).where(
+            GoalProgress.goal_id == goal_id,
+        )
+    )
+    return result.scalar_one()
+
+
+async def get_consistency_rate(session: AsyncSession, goal_id: int, days: int) -> tuple[int, int]:
+    """Return (days_met_quota, total_days) for the last N days."""
+    goal = await session.get(Goal, goal_id)
+    if not goal:
+        return 0, days
+
+    start_date = date.today() - timedelta(days=days - 1)
+    result = await session.execute(
+        select(GoalProgress.date, GoalProgress.count)
+        .where(
+            GoalProgress.goal_id == goal_id,
+            GoalProgress.date >= start_date,
+        )
+    )
+    met = sum(1 for _, count in result.all() if count >= goal.daily_quota)
+    return met, days
+
+
 async def get_today_status(session: AsyncSession, user_id: str) -> list[tuple[Goal, int, int]]:
     """Return list of (goal, today_count, total_count) for a user."""
     goals = await list_goals(session, user_id)
@@ -149,15 +179,19 @@ async def get_today_status(session: AsyncSession, user_id: str) -> list[tuple[Go
 @dataclass
 class GoalStats:
     name: str
-    target_count: int
+    target_count: int | None
     daily_quota: int
     total_done: int
     today_done: int
     current_streak: int
-    completion_pct: float
     days_active: int
     deadline: date | None
-    projected_days_left: int | None  # estimated days to finish at current pace
+    # Target-based stats
+    completion_pct: float | None  # None for streak-based
+    projected_days_left: int | None
+    # Streak-based stats
+    consistency_7d: tuple[int, int]  # (met_quota_days, 7)
+    consistency_30d: tuple[int, int]  # (met_quota_days, 30)
 
 
 async def get_goal_stats(session: AsyncSession, user_id: str) -> list[GoalStats]:
@@ -169,19 +203,24 @@ async def get_goal_stats(session: AsyncSession, user_id: str) -> list[GoalStats]
         total = await get_total_progress(session, goal.id)
         today = await get_today_progress(session, goal.id)
         streak = await get_streak(session, goal.id)
+        c7 = await get_consistency_rate(session, goal.id, 7)
+        c30 = await get_consistency_rate(session, goal.id, 30)
 
         days_active = (date.today() - goal.created_at.date()).days + 1
-        completion_pct = round(total / goal.target_count * 100, 1) if goal.target_count > 0 else 0
 
-        # Project remaining days based on average daily pace
-        remaining = goal.target_count - total
-        if remaining <= 0:
-            projected = 0
-        elif days_active > 0 and total > 0:
-            avg_per_day = total / days_active
-            projected = ceil(remaining / avg_per_day)
-        else:
-            projected = ceil(remaining / goal.daily_quota) if goal.daily_quota > 0 else None
+        completion_pct = None
+        projected = None
+
+        if goal.target_count is not None:
+            completion_pct = round(total / goal.target_count * 100, 1) if goal.target_count > 0 else 0
+            remaining = goal.target_count - total
+            if remaining <= 0:
+                projected = 0
+            elif days_active > 0 and total > 0:
+                avg_per_day = total / days_active
+                projected = ceil(remaining / avg_per_day)
+            else:
+                projected = ceil(remaining / goal.daily_quota) if goal.daily_quota > 0 else None
 
         stats.append(GoalStats(
             name=goal.name,
@@ -190,10 +229,12 @@ async def get_goal_stats(session: AsyncSession, user_id: str) -> list[GoalStats]
             total_done=total,
             today_done=today,
             current_streak=streak,
-            completion_pct=completion_pct,
             days_active=days_active,
             deadline=goal.deadline,
+            completion_pct=completion_pct,
             projected_days_left=projected,
+            consistency_7d=c7,
+            consistency_30d=c30,
         ))
 
     return stats

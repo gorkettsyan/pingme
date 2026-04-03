@@ -68,8 +68,9 @@ class Goal(Base):
     user_id: Mapped[str] = mapped_column(String(100), index=True)
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    target_count: Mapped[int] = mapped_column(Integer)  # e.g. 150 problems
+    target_count: Mapped[int | None] = mapped_column(Integer, nullable=True)  # e.g. 150 problems; None for streak-based goals
     daily_quota: Mapped[int] = mapped_column(Integer, default=1)  # e.g. 3 per day
+    unit: Mapped[str] = mapped_column(String(50), default="times")  # e.g. problems, hours, sessions
     deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
     reminder_time: Mapped[time | None] = mapped_column(Time, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

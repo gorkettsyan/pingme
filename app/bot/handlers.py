@@ -32,7 +32,7 @@ REMIND_TITLE, REMIND_TIME, REMIND_CRON = range(3)
 HABIT_NAME, HABIT_FREQUENCY, HABIT_TIME = range(3, 6)
 WHATSAPP_PHONE = 6
 EDIT_HABIT_TIME = 7
-GOAL_NAME, GOAL_TARGET, GOAL_QUOTA, GOAL_DEADLINE, GOAL_TIME = range(8, 13)
+GOAL_NAME, GOAL_TARGET, GOAL_UNIT, GOAL_QUOTA, GOAL_DEADLINE, GOAL_TIME = range(8, 14)
 
 
 # ── /start ──────────────────────────────────────────────────────────────
@@ -358,7 +358,13 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def goal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
     if not update.effective_chat:
         return ConversationHandler.END
-    await update.effective_chat.send_message("What's your goal? (e.g. Solve 150 LeetCode problems)")
+    await update.effective_chat.send_message(
+        "What's your goal?\n\n"
+        "Examples:\n"
+        "  Solve LeetCode problems\n"
+        "  Prepare for interviews\n"
+        "  Study system design"
+    )
     return GOAL_NAME
 
 
@@ -366,23 +372,48 @@ async def goal_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not update.message or not update.effective_chat or context.user_data is None:
         return ConversationHandler.END
     context.user_data["goal_name"] = update.message.text  # type: ignore[index]
-    await update.effective_chat.send_message("What's the target count? (e.g. `150`)")
+    await update.effective_chat.send_message(
+        "Do you have a total target to reach?\n\n"
+        "Send a number (e.g. `150` for 150 problems)\n"
+        "or `skip` if it's a daily practice goal."
+    )
     return GOAL_TARGET
 
 
 async def goal_target_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
     if not update.message or not update.effective_chat or context.user_data is None:
         return ConversationHandler.END
-    text = (update.message.text or "").strip()
+    text = (update.message.text or "").strip().lower()
+
+    if text == "skip":
+        context.user_data["goal_target"] = None  # type: ignore[index]
+        await update.effective_chat.send_message(
+            "What unit do you track daily?\n\n"
+            "Examples: `hours`, `sessions`, `problems`, `pages`"
+        )
+        return GOAL_UNIT
+
     try:
         target = int(text)
         if target <= 0:
             raise ValueError
     except ValueError:
-        await update.effective_chat.send_message("Please send a positive number.")
+        await update.effective_chat.send_message("Please send a positive number or `skip`.")
         return GOAL_TARGET
     context.user_data["goal_target"] = target  # type: ignore[index]
-    await update.effective_chat.send_message("How many per day? (daily quota, e.g. `3`)")
+    await update.effective_chat.send_message(
+        "What unit do you track?\n\n"
+        "Examples: `problems`, `hours`, `sessions`, `pages`"
+    )
+    return GOAL_UNIT
+
+
+async def goal_unit_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.message or not update.effective_chat or context.user_data is None:
+        return ConversationHandler.END
+    text = (update.message.text or "").strip().lower()
+    context.user_data["goal_unit"] = text  # type: ignore[index]
+    await update.effective_chat.send_message(f"How many {text} per day? (daily quota, e.g. `3`)")
     return GOAL_QUOTA
 
 
@@ -442,7 +473,8 @@ async def goal_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return GOAL_TIME
 
     name = context.user_data.get("goal_name", "goal")  # type: ignore[union-attr]
-    target = context.user_data.get("goal_target", 1)  # type: ignore[union-attr]
+    target = context.user_data.get("goal_target")  # type: ignore[union-attr]
+    unit = context.user_data.get("goal_unit", "times")  # type: ignore[union-attr]
     quota = context.user_data.get("goal_quota", 1)  # type: ignore[union-attr]
     deadline = context.user_data.get("goal_deadline")  # type: ignore[union-attr]
 
@@ -451,6 +483,7 @@ async def goal_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             session, user_id, name,
             target_count=target,
             daily_quota=quota,
+            unit=unit,
             deadline=deadline,
             reminder_time=reminder_time,
         )
@@ -462,11 +495,15 @@ async def goal_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             await goal_service.update_job_id(session, goal.id, job_id)
 
+    if target:
+        target_str = f"Target: {target} {unit} (daily: {quota})"
+    else:
+        target_str = f"Daily: {quota} {unit}"
     deadline_str = f"\nDeadline: {deadline}" if deadline else ""
     reminder_str = f"\nReminder at: {reminder_time.strftime('%H:%M')}" if reminder_time else ""
     await update.effective_chat.send_message(
         f"Goal created: *{name}*\n"
-        f"Target: {target} (daily: {quota})"
+        f"{target_str}"
         f"{deadline_str}{reminder_str}",
         parse_mode="Markdown",
     )
@@ -488,12 +525,13 @@ async def goals_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     lines = ["Your goals:\n"]
     for goal, today_count, total in status:
-        pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
-        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
         quota_mark = "✅" if today_count >= goal.daily_quota else f"{today_count}/{goal.daily_quota}"
         lines.append(f"*{goal.name}*")
-        lines.append(f"  {bar} {total}/{goal.target_count} ({pct}%)")
-        lines.append(f"  Today: {quota_mark}")
+        if goal.target_count:
+            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+            bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+            lines.append(f"  {bar} {total}/{goal.target_count} {goal.unit} ({pct}%)")
+        lines.append(f"  Today: {quota_mark} {goal.unit}")
         lines.append("")
 
     keyboard = goal_list_keyboard(status)
@@ -515,11 +553,16 @@ async def goalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     lines = ["🎯 *Goal Stats*\n"]
     for s in stats:
-        bar = "█" * (int(s.completion_pct) // 10) + "░" * (10 - int(s.completion_pct) // 10)
         lines.append(f"*{s.name}*")
-        lines.append(f"  {bar} {s.total_done}/{s.target_count} ({s.completion_pct}%)")
+        if s.target_count is not None:
+            pct = s.completion_pct or 0
+            bar = "█" * (int(pct) // 10) + "░" * (10 - int(pct) // 10)
+            lines.append(f"  {bar} {s.total_done}/{s.target_count} ({pct}%)")
         lines.append(f"  Today: {s.today_done}/{s.daily_quota}")
         lines.append(f"  Streak: {s.current_streak} days")
+        c7_pct = round(s.consistency_7d[0] / s.consistency_7d[1] * 100) if s.consistency_7d[1] > 0 else 0
+        c30_pct = round(s.consistency_30d[0] / s.consistency_30d[1] * 100) if s.consistency_30d[1] > 0 else 0
+        lines.append(f"  Consistency: {c7_pct}% (7d) / {c30_pct}% (30d)")
         lines.append(f"  Active for: {s.days_active} days")
         if s.deadline:
             days_left = (s.deadline - date.today()).days
@@ -580,9 +623,12 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if goal_status:
         lines.append("*Goals*")
         for goal, today_count, total in goal_status:
-            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
             quota_mark = "✅" if today_count >= goal.daily_quota else f"{today_count}/{goal.daily_quota}"
-            lines.append(f"  🎯 {goal.name}: {quota_mark} today ({pct}% overall)")
+            if goal.target_count:
+                pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+                lines.append(f"  🎯 {goal.name}: {quota_mark} today ({pct}% overall)")
+            else:
+                lines.append(f"  🎯 {goal.name}: {quota_mark} {goal.unit} today")
         lines.append("")
 
     # Reminders
@@ -907,12 +953,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 return
             progress = await goal_service.log_progress(session, goal_id, count=goal.daily_quota)
             total = await goal_service.get_total_progress(session, goal_id)
-            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
             streak = await goal_service.get_streak(session, goal_id)
-            msg = f"🎯 *{goal.name}*: +{goal.daily_quota} logged!\n"
-            msg += f"Today: {progress.count} | Total: {total}/{goal.target_count} ({pct}%)\n"
+            msg = f"🎯 *{goal.name}*: +{goal.daily_quota} {goal.unit} logged!\n"
+            if goal.target_count:
+                pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+                msg += f"Today: {progress.count} | Total: {total}/{goal.target_count} ({pct}%)\n"
+            else:
+                msg += f"Today: {progress.count} {goal.unit}\n"
             msg += f"Streak: {streak} day{'s' if streak != 1 else ''}"
-            if total >= goal.target_count:
+            if goal.target_count and total >= goal.target_count:
                 msg += "\n\n🏆 Goal completed! Congratulations!"
             await query.edit_message_text(msg, parse_mode="Markdown")
 
@@ -1220,6 +1269,7 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         states={
             GOAL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_name_input)],
             GOAL_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_target_input)],
+            GOAL_UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_unit_input)],
             GOAL_QUOTA: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_quota_input)],
             GOAL_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_deadline_input)],
             GOAL_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_time_input)],

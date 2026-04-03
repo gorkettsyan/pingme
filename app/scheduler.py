@@ -161,6 +161,63 @@ async def send_shame_check() -> None:
         logger.exception("Failed to run shame check")
 
 
+async def send_goal_morning_summary() -> None:
+    """Send a morning summary of active goals to all users."""
+    logger.info("Sending goal morning summaries")
+    try:
+        from app.services.goal_service import get_today_status, list_goals
+
+        async with async_session() as session:
+            result = await session.execute(
+                select(Goal.user_id).where(Goal.is_active == True).distinct()  # noqa: E712
+            )
+            user_ids = [row[0] for row in result.all()]
+
+        bot = Bot(token=settings.telegram_bot_token)
+        async with bot:
+            for user_id in user_ids:
+                try:
+                    async with async_session() as session:
+                        status = await get_today_status(session, user_id)
+                    if not status:
+                        continue
+
+                    lines = ["🎯 *Good morning! Here are your goals for today:*\n"]
+                    for goal, today_count, total in status:
+                        quota_mark = f"{today_count}/{goal.daily_quota}"
+                        lines.append(f"  • *{goal.name}*: {quota_mark} {goal.unit}")
+                        if goal.target_count:
+                            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+                            lines.append(f"    Progress: {total}/{goal.target_count} ({pct}%)")
+                        if goal.deadline:
+                            from datetime import date
+                            days_left = (goal.deadline - date.today()).days
+                            lines.append(f"    Deadline: {days_left} days left")
+
+                    lines.append("\nUse /goals to log progress!")
+                    await bot.send_message(
+                        chat_id=int(user_id),
+                        text="\n".join(lines),
+                        parse_mode="Markdown",
+                    )
+                    logger.info("Sent goal morning summary to user %s", user_id)
+                except Exception:
+                    logger.exception("Failed to send goal morning summary to user %s", user_id)
+    except Exception:
+        logger.exception("Failed to send goal morning summaries")
+
+
+def schedule_goal_morning_summary() -> None:
+    """Schedule the goal morning summary for every day at 08:00."""
+    scheduler.add_job(
+        send_goal_morning_summary,
+        trigger=CronTrigger(hour=8, minute=0),
+        id="goal_morning_summary",
+        replace_existing=True,
+    )
+    logger.info("Goal morning summary scheduled for every day at 08:00")
+
+
 def schedule_shame_check() -> None:
     """Schedule the shame check for every day at 21:00."""
     scheduler.add_job(
