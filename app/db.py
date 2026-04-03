@@ -27,13 +27,17 @@ async def init_db() -> None:
 
 async def _migrate(conn: AsyncConnection) -> None:
     """Add missing columns to existing tables. Safe to run multiple times."""
+    import logging
+
     import sqlalchemy
+
+    logger = logging.getLogger(__name__)
 
     migrations = [
         ("habits", "shame_enabled", "BOOLEAN DEFAULT 0"),
         ("custom_shame_messages", None, None),  # new table, handled by create_all
         ("goals", None, None),  # new table, handled by create_all
-        ("goals", "unit", "VARCHAR(50) DEFAULT 'times'"),
+        ("goals", "unit", "VARCHAR(50) NOT NULL DEFAULT 'times'"),
         ("goal_progress", None, None),  # new table, handled by create_all
     ]
     for table, column, col_type in migrations:
@@ -41,5 +45,6 @@ async def _migrate(conn: AsyncConnection) -> None:
             continue
         try:
             await conn.execute(sqlalchemy.text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+            logger.info("Migration: added column %s.%s", table, column)
         except Exception:
             pass  # Column already exists
