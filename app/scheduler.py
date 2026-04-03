@@ -11,7 +11,7 @@ from app.config import settings
 from sqlalchemy import select
 
 from app.db import async_session
-from app.models import Habit, Reminder
+from app.models import Goal, Habit, Reminder
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,21 @@ def snooze_reminder(reminder_id: int, minutes: int) -> None:
         replace_existing=True,
     )
     logger.info("Snoozed reminder %s for %s minutes", reminder_id, minutes)
+
+
+async def fire_goal_checkin(goal_id: int, goal_name: str, user_id: str) -> None:
+    """Called by APScheduler to send goal check-in reminders."""
+    try:
+        bot = Bot(token=settings.telegram_bot_token)
+        async with bot:
+            await bot.send_message(
+                chat_id=int(user_id),
+                text=f"🎯 *Goal Check-in: {goal_name}*\nTime to make progress! Use /goals to log it.",
+                parse_mode="Markdown",
+            )
+        logger.info("Sent goal checkin for %s to user %s", goal_name, user_id)
+    except Exception:
+        logger.exception("Failed to send goal checkin for %s", goal_name)
 
 
 async def fire_habit_checkin(habit_id: int, habit_name: str, user_id: str) -> None:
@@ -243,6 +258,18 @@ async def restore_jobs() -> None:
                 )
                 logger.info("Restored habit reminder: %s at %s", habit.name, habit.reminder_time)
 
+        # Restore goal reminders
+        result = await session.execute(
+            select(Goal).where(Goal.is_active == True)  # noqa: E712
+        )
+        for (goal,) in result.all():
+            if goal.reminder_time:
+                schedule_goal(
+                    goal.id, goal.name, goal.user_id,
+                    goal.reminder_time.hour, goal.reminder_time.minute,
+                )
+                logger.info("Restored goal reminder: %s at %s", goal.name, goal.reminder_time)
+
     logger.info("All jobs restored from database")
 
 
@@ -296,6 +323,25 @@ def schedule_habit(habit_id: int, habit_name: str, user_id: str, hour: int, minu
         replace_existing=True,
     )
     logger.info("Scheduled habit %s (%s), next_run=%s", habit_name, job_id, job.next_run_time)
+    return job_id
+
+
+def schedule_goal(goal_id: int, goal_name: str, user_id: str, hour: int, minute: int) -> str:
+    job_id = f"goal_{goal_id}"
+
+    existing = scheduler.get_job(job_id)
+    if existing:
+        existing.remove()
+
+    trigger = CronTrigger(hour=hour, minute=minute, timezone=settings.timezone)
+    job = scheduler.add_job(
+        fire_goal_checkin,
+        trigger=trigger,
+        args=[goal_id, goal_name, user_id],
+        id=job_id,
+        replace_existing=True,
+    )
+    logger.info("Scheduled goal %s (%s), next_run=%s", goal_name, job_id, job.next_run_time)
     return job_id
 
 

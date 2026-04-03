@@ -61,6 +61,37 @@ class CustomShameMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Goal(Base):
+    __tablename__ = "goals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(100), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_count: Mapped[int] = mapped_column(Integer)  # e.g. 150 problems
+    daily_quota: Mapped[int] = mapped_column(Integer, default=1)  # e.g. 3 per day
+    deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reminder_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    apscheduler_job_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    progress: Mapped[list["GoalProgress"]] = relationship(back_populates="goal", cascade="all, delete-orphan")
+
+
+class GoalProgress(Base):
+    __tablename__ = "goal_progress"
+    __table_args__ = (UniqueConstraint("goal_id", "date", name="uq_goal_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    goal_id: Mapped[int] = mapped_column(Integer, ForeignKey("goals.id"))
+    count: Mapped[int] = mapped_column(Integer, default=0)  # how many done that day
+    date: Mapped[date] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    goal: Mapped["Goal"] = relationship(back_populates="progress")
+
+
 class NotificationChannel(Base):
     __tablename__ = "notification_channels"
 

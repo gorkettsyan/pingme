@@ -14,6 +14,7 @@ from telegram.ext import (
 
 from app.bot.keyboards import (
     channel_keyboard,
+    goal_list_keyboard,
     habit_list_keyboard,
     reminder_list_keyboard,
 )
@@ -21,7 +22,7 @@ from app.config import settings
 from app.db import async_session
 from app.notifier import add_channel, get_user_channels, remove_channel
 from app.scheduler import cancel_job, dismiss_reminder, schedule_habit, schedule_reminder, snooze_reminder
-from app.services import habit_service, reminder_service
+from app.services import goal_service, habit_service, reminder_service
 from app.services.shame_service import VALID_LEVELS, add_custom_shame, delete_custom_shame, list_custom_shames, toggle_shame
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ REMIND_TITLE, REMIND_TIME, REMIND_CRON = range(3)
 HABIT_NAME, HABIT_FREQUENCY, HABIT_TIME = range(3, 6)
 WHATSAPP_PHONE = 6
 EDIT_HABIT_TIME = 7
+GOAL_NAME, GOAL_TARGET, GOAL_QUOTA, GOAL_DEADLINE, GOAL_TIME = range(8, 13)
 
 
 # ── /start ──────────────────────────────────────────────────────────────
@@ -55,6 +57,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/reminders - List active reminders\n"
         "/habit - Create a new habit\n"
         "/habits - Today's habit status\n"
+        "/goal - Create a new goal\n"
+        "/goals - Today's goal progress\n"
         "/streak - View your streaks\n"
         "/channels - Manage notification channels\n"
         "/help - Show this help"
@@ -80,6 +84,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/addshame - Add custom shame message\n"
         "/myshames - List your custom messages\n"
         "/deletehabit - Delete a habit\n\n"
+        "/goal - Create a new goal (guided)\n"
+        "/goals - Today's goal progress + log\n"
+        "/goalstats - Goal analytics + projections\n"
+        "/deletegoal - Delete a goal\n\n"
         "/channels - Manage notification channels\n"
         "/help - Show this help"
     )
@@ -346,6 +354,204 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
 
 
+# ── Goal conversation ─────────────────────────────────────────────────
+async def goal_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.effective_chat:
+        return ConversationHandler.END
+    await update.effective_chat.send_message("What's your goal? (e.g. Solve 150 LeetCode problems)")
+    return GOAL_NAME
+
+
+async def goal_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.message or not update.effective_chat or context.user_data is None:
+        return ConversationHandler.END
+    context.user_data["goal_name"] = update.message.text  # type: ignore[index]
+    await update.effective_chat.send_message("What's the target count? (e.g. `150`)")
+    return GOAL_TARGET
+
+
+async def goal_target_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.message or not update.effective_chat or context.user_data is None:
+        return ConversationHandler.END
+    text = (update.message.text or "").strip()
+    try:
+        target = int(text)
+        if target <= 0:
+            raise ValueError
+    except ValueError:
+        await update.effective_chat.send_message("Please send a positive number.")
+        return GOAL_TARGET
+    context.user_data["goal_target"] = target  # type: ignore[index]
+    await update.effective_chat.send_message("How many per day? (daily quota, e.g. `3`)")
+    return GOAL_QUOTA
+
+
+async def goal_quota_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.message or not update.effective_chat or context.user_data is None:
+        return ConversationHandler.END
+    text = (update.message.text or "").strip()
+    try:
+        quota = int(text)
+        if quota <= 0:
+            raise ValueError
+    except ValueError:
+        await update.effective_chat.send_message("Please send a positive number.")
+        return GOAL_QUOTA
+    context.user_data["goal_quota"] = quota  # type: ignore[index]
+    await update.effective_chat.send_message(
+        "Deadline? (optional)\n\n"
+        "Send a date like `2026-06-01` or `skip` for no deadline."
+    )
+    return GOAL_DEADLINE
+
+
+async def goal_deadline_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.message or not update.effective_chat or context.user_data is None:
+        return ConversationHandler.END
+    text = (update.message.text or "").strip().lower()
+
+    if text == "skip":
+        context.user_data["goal_deadline"] = None  # type: ignore[index]
+    else:
+        try:
+            from datetime import date as date_type
+            deadline = date_type.fromisoformat(text)
+            context.user_data["goal_deadline"] = deadline  # type: ignore[index]
+        except ValueError:
+            await update.effective_chat.send_message("Invalid date. Use YYYY-MM-DD format or `skip`.")
+            return GOAL_DEADLINE
+
+    await update.effective_chat.send_message("Daily reminder time? (e.g. `09:00` or `skip`)")
+    return GOAL_TIME
+
+
+async def goal_time_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> object:
+    if not update.message or not update.effective_chat or context.user_data is None:
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip().lower()
+    user_id = str(update.effective_chat.id)
+
+    reminder_time = None
+    if text != "skip":
+        try:
+            parts = text.split(":")
+            reminder_time = time(int(parts[0]), int(parts[1]))
+        except (ValueError, IndexError):
+            await update.effective_chat.send_message("Invalid time format. Use HH:MM (e.g. `09:00`) or `skip`.")
+            return GOAL_TIME
+
+    name = context.user_data.get("goal_name", "goal")  # type: ignore[union-attr]
+    target = context.user_data.get("goal_target", 1)  # type: ignore[union-attr]
+    quota = context.user_data.get("goal_quota", 1)  # type: ignore[union-attr]
+    deadline = context.user_data.get("goal_deadline")  # type: ignore[union-attr]
+
+    async with async_session() as session:
+        goal = await goal_service.create_goal(
+            session, user_id, name,
+            target_count=target,
+            daily_quota=quota,
+            deadline=deadline,
+            reminder_time=reminder_time,
+        )
+        if reminder_time:
+            from app.scheduler import schedule_goal
+            job_id = schedule_goal(
+                goal.id, goal.name, user_id,
+                reminder_time.hour, reminder_time.minute,
+            )
+            await goal_service.update_job_id(session, goal.id, job_id)
+
+    deadline_str = f"\nDeadline: {deadline}" if deadline else ""
+    reminder_str = f"\nReminder at: {reminder_time.strftime('%H:%M')}" if reminder_time else ""
+    await update.effective_chat.send_message(
+        f"Goal created: *{name}*\n"
+        f"Target: {target} (daily: {quota})"
+        f"{deadline_str}{reminder_str}",
+        parse_mode="Markdown",
+    )
+    return ConversationHandler.END
+
+
+# ── /goals ─────────────────────────────────────────────────────────────
+async def goals_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        status = await goal_service.get_today_status(session, user_id)
+
+    if not status:
+        await update.effective_chat.send_message("No goals yet. Use /goal to create one.")
+        return
+
+    lines = ["Your goals:\n"]
+    for goal, today_count, total in status:
+        pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+        bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+        quota_mark = "✅" if today_count >= goal.daily_quota else f"{today_count}/{goal.daily_quota}"
+        lines.append(f"*{goal.name}*")
+        lines.append(f"  {bar} {total}/{goal.target_count} ({pct}%)")
+        lines.append(f"  Today: {quota_mark}")
+        lines.append("")
+
+    keyboard = goal_list_keyboard(status)
+    await update.effective_chat.send_message("\n".join(lines), reply_markup=keyboard, parse_mode="Markdown")
+
+
+# ── /goalstats ─────────────────────────────────────────────────────────
+async def goalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        stats = await goal_service.get_goal_stats(session, user_id)
+
+    if not stats:
+        await update.effective_chat.send_message("No goals yet. Use /goal to create one.")
+        return
+
+    lines = ["🎯 *Goal Stats*\n"]
+    for s in stats:
+        bar = "█" * (int(s.completion_pct) // 10) + "░" * (10 - int(s.completion_pct) // 10)
+        lines.append(f"*{s.name}*")
+        lines.append(f"  {bar} {s.total_done}/{s.target_count} ({s.completion_pct}%)")
+        lines.append(f"  Today: {s.today_done}/{s.daily_quota}")
+        lines.append(f"  Streak: {s.current_streak} days")
+        lines.append(f"  Active for: {s.days_active} days")
+        if s.deadline:
+            days_left = (s.deadline - date.today()).days
+            lines.append(f"  Deadline: {s.deadline} ({days_left} days left)")
+        if s.projected_days_left is not None:
+            if s.projected_days_left == 0:
+                lines.append("  🏆 Goal completed!")
+            else:
+                lines.append(f"  Projected: ~{s.projected_days_left} days to finish")
+        lines.append("")
+
+    await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
+
+
+# ── /deletegoal ────────────────────────────────────────────────────────
+async def deletegoal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        goals = await goal_service.list_goals(session, user_id)
+
+    if not goals:
+        await update.effective_chat.send_message("No goals to delete.")
+        return
+
+    from app.bot.keyboards import goal_delete_keyboard
+    keyboard = goal_delete_keyboard(goals)
+    await update.effective_chat.send_message("Select a goal to delete:", reply_markup=keyboard)
+
+
 # ── /today ──────────────────────────────────────────────────────────────
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -360,6 +566,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     async with async_session() as session:
         status = await habit_service.get_today_status(session, user_id)
         reminders = await reminder_service.list_reminders(session, user_id)
+        goal_status = await goal_service.get_today_status(session, user_id)
 
     if status:
         done_count = sum(1 for _, done in status if done)
@@ -367,6 +574,15 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         for habit, done in status:
             mark = "✅" if done else "⬜"
             lines.append(f"  {mark} {habit.name}")
+        lines.append("")
+
+    # Goals
+    if goal_status:
+        lines.append("*Goals*")
+        for goal, today_count, total in goal_status:
+            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+            quota_mark = "✅" if today_count >= goal.daily_quota else f"{today_count}/{goal.daily_quota}"
+            lines.append(f"  🎯 {goal.name}: {quota_mark} today ({pct}% overall)")
         lines.append("")
 
     # Reminders
@@ -387,7 +603,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 lines.append(f"  🔔 {r.title} at {time_str}")
         lines.append("")
 
-    if not status and not today_reminders:
+    if not status and not today_reminders and not goal_status:
         lines.append("Nothing scheduled for today.")
 
     keyboard = habit_list_keyboard(status) if status else None
@@ -682,6 +898,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.user_data["editing_habit_id"] = habit_id  # type: ignore[index]
         await query.edit_message_text(f"Send the new reminder time (e.g. `09:00` or `18:30`):")
 
+    elif data.startswith("goal_log_"):
+        goal_id = int(data[9:])
+        async with async_session() as session:
+            goal = await goal_service.get_goal(session, goal_id)
+            if not goal:
+                await query.edit_message_text("Goal not found.")
+                return
+            progress = await goal_service.log_progress(session, goal_id, count=goal.daily_quota)
+            total = await goal_service.get_total_progress(session, goal_id)
+            pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+            streak = await goal_service.get_streak(session, goal_id)
+            msg = f"🎯 *{goal.name}*: +{goal.daily_quota} logged!\n"
+            msg += f"Today: {progress.count} | Total: {total}/{goal.target_count} ({pct}%)\n"
+            msg += f"Streak: {streak} day{'s' if streak != 1 else ''}"
+            if total >= goal.target_count:
+                msg += "\n\n🏆 Goal completed! Congratulations!"
+            await query.edit_message_text(msg, parse_mode="Markdown")
+
+    elif data.startswith("del_goal_"):
+        goal_id = int(data[9:])
+        async with async_session() as session:
+            goal = await goal_service.get_goal(session, goal_id)
+            if goal and goal.apscheduler_job_id:
+                cancel_job(goal.apscheduler_job_id)
+            await goal_service.delete_goal(session, goal_id)
+        await query.edit_message_text("Goal deleted.")
+
     elif data == "add_whatsapp":
         if not update.effective_chat:
             return
@@ -972,13 +1215,29 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         fallbacks=[CommandHandler("cancel", cancel_command)],
     )
 
+    goal_conversation = ConversationHandler(  # type: ignore[arg-type]
+        entry_points=[CommandHandler("goal", goal_start)],
+        states={
+            GOAL_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_name_input)],
+            GOAL_TARGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_target_input)],
+            GOAL_QUOTA: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_quota_input)],
+            GOAL_DEADLINE: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_deadline_input)],
+            GOAL_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, goal_time_input)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_command)],
+    )
+
     return [
         CommandHandler("start", start_command),
         CommandHandler("help", help_command),
         remind_conversation,
         habit_conversation,
+        goal_conversation,
         CommandHandler("reminders", reminders_command),
         CommandHandler("habits", habits_command),
+        CommandHandler("goals", goals_command),
+        CommandHandler("goalstats", goalstats_command),
+        CommandHandler("deletegoal", deletegoal_command),
         CommandHandler("streak", streak_command),
         CommandHandler("edithabit", edithabit_command),
         CommandHandler("testshame", testshame_command),

@@ -32,6 +32,8 @@ async def _migrate(conn: AsyncConnection) -> None:
     migrations = [
         ("habits", "shame_enabled", "BOOLEAN DEFAULT 0"),
         ("custom_shame_messages", None, None),  # new table, handled by create_all
+        ("goals", None, None),  # new table, handled by create_all
+        ("goal_progress", None, None),  # new table, handled by create_all
     ]
     for table, column, col_type in migrations:
         if column is None:

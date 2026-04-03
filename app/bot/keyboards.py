@@ -1,6 +1,6 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.models import Habit, Reminder
+from app.models import Goal, Habit, Reminder
 
 
 def reminder_list_keyboard(reminders: list[Reminder]) -> InlineKeyboardMarkup:
@@ -44,6 +44,26 @@ def habit_edit_keyboard(habits: list[Habit]) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(
             f"{h.name} ({time_str})", callback_data=f"edit_hab_{h.id}"
         )])
+    return InlineKeyboardMarkup(buttons)
+
+
+def goal_list_keyboard(goals: list[tuple[Goal, int, int]]) -> InlineKeyboardMarkup:
+    """Keyboard for /goals: log progress or view details."""
+    buttons = []
+    for goal, today_count, total in goals:
+        pct = round(total / goal.target_count * 100) if goal.target_count > 0 else 0
+        buttons.append([InlineKeyboardButton(
+            f"+{goal.daily_quota}: {goal.name} ({total}/{goal.target_count} — {pct}%)",
+            callback_data=f"goal_log_{goal.id}",
+        )])
+    return InlineKeyboardMarkup(buttons)
+
+
+def goal_delete_keyboard(goals: list[Goal]) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(f"Delete: {g.name}", callback_data=f"del_goal_{g.id}")]
+        for g in goals
+    ]
     return InlineKeyboardMarkup(buttons)
 
 
