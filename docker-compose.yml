@@ -7,6 +7,19 @@ services:
       - db-data:/app/data
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///data/reminder_app.db
+      - OLLAMA_URL=http://ollama:11434
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    # Uncomment to expose Ollama API externally:
+    # ports:
+    #   - "11434:11434"
 
 volumes:
   db-data:
+  ollama-data:

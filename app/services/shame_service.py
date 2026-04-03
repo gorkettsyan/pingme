@@ -1,3 +1,4 @@
+import logging
 import random
 from datetime import date, timedelta
 
@@ -5,6 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import CustomShameMessage, Habit, HabitCompletion
+
+logger = logging.getLogger(__name__)
 
 # Default escalating shame messages by level
 DEFAULT_SHAME_MESSAGES: dict[str, list[str]] = {
@@ -54,21 +57,18 @@ def get_shame_level(missed_days: int) -> str:
 
 
 async def get_shame_message(session: AsyncSession, user_id: str, habit_name: str, missed_days: int) -> str:
-    """Pick a random shame message from defaults + user's custom messages."""
+    """Generate a shame message using AI."""
+    from app.services.llm_service import generate_shame
+
     level = get_shame_level(missed_days)
 
-    # Get custom messages for this user and level
-    result = await session.execute(
-        select(CustomShameMessage.message).where(
-            CustomShameMessage.user_id == user_id,
-            CustomShameMessage.level == level,
-        )
-    )
-    custom = [row[0] for row in result.all()]
+    result = await generate_shame(habit_name, missed_days, level)
+    if result:
+        return result
 
-    # Combine defaults + custom
-    all_messages = DEFAULT_SHAME_MESSAGES[level] + custom
-    template = random.choice(all_messages)
+    # Fallback to static only if LLM is unavailable
+    logger.warning("LLM unavailable for shame generation, falling back to static")
+    template = random.choice(DEFAULT_SHAME_MESSAGES[level])
     return template.format(name=habit_name, days=missed_days)
 
 

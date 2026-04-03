@@ -68,6 +68,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_chat.send_message(
         "Reminder App Commands:\n\n"
         "/today - Your day at a glance\n"
+        "/ask - Smart reminder (natural language)\n"
         "/remind - Create a new reminder (guided)\n"
         "/reminders - List & delete reminders\n\n"
         "/habit - Create a new habit (guided)\n"
@@ -520,6 +521,38 @@ async def edithabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.effective_chat.send_message("Select a habit to edit its reminder time:", reply_markup=keyboard)
 
 
+# ── /testshame — generate a shame message for testing ───────────────────
+async def testshame_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+
+    text = (update.message.text or "").replace("/testshame", "", 1).strip()
+    if not text:
+        await update.effective_chat.send_message(
+            "Usage: /testshame <habit_name> <missed_days>\n\n"
+            "Example: /testshame Exercise 5"
+        )
+        return
+
+    parts = text.rsplit(maxsplit=1)
+    habit_name = parts[0]
+    try:
+        missed_days = int(parts[1]) if len(parts) > 1 else 3
+    except ValueError:
+        missed_days = 3
+
+    from app.services.shame_service import get_shame_level, get_shame_message
+    level = get_shame_level(missed_days)
+
+    user_id = str(update.effective_chat.id)
+    async with async_session() as session:
+        message = await get_shame_message(session, user_id, habit_name, missed_days)
+
+    await update.effective_chat.send_message(
+        f"😈 [{level}, {missed_days} days missed]\n\n{message}"
+    )
+
+
 # ── /deletehabit ────────────────────────────────────────────────────────
 async def deletehabit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -561,6 +594,19 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     data = query.data
     user_id = str(query.from_user.id) if query.from_user else ""
+    logger.info("Callback received: data=%s, user=%s", data, user_id)
+
+    if data.startswith("undone_"):
+        habit_id = int(data[7:])
+        async with async_session() as session:
+            removed = await habit_service.undo_complete(session, habit_id)
+            if removed:
+                habit = await habit_service.get_habit(session, habit_id)
+                name = habit.name if habit else "habit"
+                await query.edit_message_text(f"{name} unmarked. Oops happen!")
+            else:
+                await query.edit_message_text("Nothing to undo.")
+        return
 
     if data.startswith("dismiss_"):
         reminder_id = int(data[8:])
@@ -588,13 +634,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data.startswith("done_"):
         habit_id = int(data[5:])
+        logger.info("Done button pressed for habit_id=%s", habit_id)
         async with async_session() as session:
             completion = await habit_service.mark_complete(session, habit_id)
+            logger.info("mark_complete result: %s", completion)
             if completion:
                 streak = await habit_service.get_streak(session, habit_id)
                 habit = await habit_service.get_habit(session, habit_id)
                 name = habit.name if habit else "habit"
-                await query.edit_message_text(f"*{name}* marked done!\nCurrent streak: {streak} day{'s' if streak != 1 else ''}", parse_mode="Markdown")
+                base_msg = f"{name} marked done!\nCurrent streak: {streak} day{'s' if streak != 1 else ''}"
+                # Generate praise (non-blocking — don't let it break the flow)
+                try:
+                    from app.services.llm_service import generate_praise
+                    praise = await generate_praise(name, streak)
+                    await query.edit_message_text(f"{base_msg}\n\n🎉 {praise}")
+                except Exception:
+                    logger.exception("Praise generation failed")
+                    await query.edit_message_text(base_msg)
             else:
                 await query.edit_message_text("Already completed today!")
 
@@ -693,33 +749,199 @@ async def free_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     # Handle WhatsApp phone number
-    if not context.user_data.get("awaiting_whatsapp"):  # type: ignore[union-attr]
-        return
+    if context.user_data.get("awaiting_whatsapp"):  # type: ignore[union-attr]
+        if not text.startswith("+"):
+            await update.effective_chat.send_message("Please send your phone number with country code (e.g. +1234567890)")
+            return
 
-    if not text.startswith("+"):
-        await update.effective_chat.send_message("Please send your phone number with country code (e.g. +1234567890)")
-        return
+        user_id = str(update.effective_chat.id)
+        sid = settings.twilio_account_sid
+        token = settings.twilio_auth_token
+        from_phone = settings.twilio_from_phone
 
-    user_id = str(update.effective_chat.id)
-    sid = settings.twilio_account_sid
-    token = settings.twilio_auth_token
-    from_phone = settings.twilio_from_phone
+        if not sid or not token or not from_phone:
+            await update.effective_chat.send_message(
+                "Twilio credentials not configured. Add TWILIO_ACCOUNT_SID, "
+                "TWILIO_AUTH_TOKEN, and TWILIO_FROM_PHONE to your .env file."
+            )
+            context.user_data["awaiting_whatsapp"] = False  # type: ignore[index]
+            return
 
-    if not sid or not token or not from_phone:
-        await update.effective_chat.send_message(
-            "Twilio credentials not configured. Add TWILIO_ACCOUNT_SID, "
-            "TWILIO_AUTH_TOKEN, and TWILIO_FROM_PHONE to your .env file."
-        )
+        apprise_url = f"twilio://{sid}:{token}@{from_phone}/{text}"
+
+        async with async_session() as session:
+            await add_channel(session, user_id, "whatsapp", apprise_url)
+
+        await update.effective_chat.send_message(f"WhatsApp channel added for {text}!")
         context.user_data["awaiting_whatsapp"] = False  # type: ignore[index]
         return
 
-    apprise_url = f"twilio://{sid}:{token}@{from_phone}/{text}"
+    # Smart fallback: try LLM to understand the message
+    from app.services.llm_service import classify_intent, is_available, parse_natural_language
+
+    if not await is_available():
+        return  # No LLM, ignore unrecognized text
+
+    user_id = str(update.effective_chat.id)
+
+    # Get user's habit names for context
+    async with async_session() as session:
+        habits = await habit_service.list_habits(session, user_id)
+    habit_names = [h.name for h in habits]
+
+    classified = await classify_intent(text, habit_names)
+    if not classified:
+        return
+
+    intent = classified.get("intent")
+
+    if intent == "reminder":
+        # Parse as a reminder
+        parsed = await parse_natural_language(text)
+        if not parsed:
+            await update.effective_chat.send_message("I think you want a reminder but couldn't parse it. Try /remind for the guided flow.")
+            return
+
+        title = str(parsed.get("title", text))
+        time_type = parsed.get("time_type")
+        tz = ZoneInfo(settings.timezone)
+
+        async with async_session() as session:
+            if time_type == "relative":
+                minutes = int(parsed.get("relative_minutes") or 5)
+                remind_at = datetime.now(tz) + timedelta(minutes=minutes)
+                reminder = await reminder_service.create_reminder(session, user_id, title, remind_at=remind_at)
+                job_id = schedule_reminder(reminder)
+                await reminder_service.update_job_id(session, reminder.id, job_id)
+                await update.effective_chat.send_message(
+                    f"Reminder set: *{title}*\nAt: {remind_at.strftime('%Y-%m-%d %H:%M')}",
+                    parse_mode="Markdown",
+                )
+            elif time_type == "absolute":
+                abs_time = str(parsed.get("absolute_time", ""))
+                try:
+                    remind_at = datetime.strptime(abs_time, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+                except ValueError:
+                    await update.effective_chat.send_message(f"Could not parse time: {abs_time}")
+                    return
+                reminder = await reminder_service.create_reminder(session, user_id, title, remind_at=remind_at)
+                job_id = schedule_reminder(reminder)
+                await reminder_service.update_job_id(session, reminder.id, job_id)
+                await update.effective_chat.send_message(
+                    f"Reminder set: *{title}*\nAt: {remind_at.strftime('%Y-%m-%d %H:%M')}",
+                    parse_mode="Markdown",
+                )
+            elif time_type == "cron":
+                cron_expr = str(parsed.get("cron_expression", ""))
+                reminder = await reminder_service.create_reminder(session, user_id, title, cron_expression=cron_expr)
+                job_id = schedule_reminder(reminder)
+                await reminder_service.update_job_id(session, reminder.id, job_id)
+                await update.effective_chat.send_message(
+                    f"Recurring reminder set: *{title}*\nSchedule: `{cron_expr}`",
+                    parse_mode="Markdown",
+                )
+
+    elif intent == "habit_done":
+        habit_name = classified.get("habit_name")
+        if habit_name:
+            async with async_session() as session:
+                for h in habits:
+                    if h.name.lower() == habit_name.lower():
+                        completion = await habit_service.mark_complete(session, h.id)
+                        if completion:
+                            streak = await habit_service.get_streak(session, h.id)
+                            base_msg = f"{h.name} marked done!\nCurrent streak: {streak} day{'s' if streak != 1 else ''}"
+                            try:
+                                from app.services.llm_service import generate_praise
+                                praise = await generate_praise(h.name, streak)
+                                await update.effective_chat.send_message(f"{base_msg}\n\n🎉 {praise}")
+                            except Exception:
+                                await update.effective_chat.send_message(base_msg)
+                        else:
+                            await update.effective_chat.send_message(f"{h.name} already done today!")
+                        return
+            await update.effective_chat.send_message("Couldn't find that habit. Use /habits to see your list.")
+
+    elif intent in ("question", "chat"):
+        response = classified.get("response")
+        if response:
+            await update.effective_chat.send_message(response)
+
+
+# ── /ask — natural language reminders via LLM ───────────────────────────
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_chat:
+        return
+
+    from app.services.llm_service import is_available, parse_natural_language
+
+    if not await is_available():
+        await update.effective_chat.send_message("LLM is not available. Use /remind for the guided flow.")
+        return
+
+    text = (update.message.text or "").replace("/ask", "", 1).strip()
+    if not text:
+        await update.effective_chat.send_message(
+            "Tell me what to remind you about:\n\n"
+            "Examples:\n"
+            "  /ask call mom in 30 minutes\n"
+            "  /ask take medicine every day at 9am\n"
+            "  /ask meeting tomorrow at 2pm\n"
+            "  /ask water plants every monday at 8am"
+        )
+        return
+
+    await update.effective_chat.send_message("Thinking...")
+
+    parsed = await parse_natural_language(text)
+    if not parsed:
+        await update.effective_chat.send_message("Couldn't understand that. Try /remind for the guided flow.")
+        return
+
+    user_id = str(update.effective_chat.id)
+    title = str(parsed.get("title", text))
+    time_type = parsed.get("time_type")
+    tz = ZoneInfo(settings.timezone)
 
     async with async_session() as session:
-        await add_channel(session, user_id, "whatsapp", apprise_url)
+        if time_type == "relative":
+            minutes = int(parsed.get("relative_minutes") or 5)
+            remind_at = datetime.now(tz) + timedelta(minutes=minutes)
+            reminder = await reminder_service.create_reminder(session, user_id, title, remind_at=remind_at)
+            job_id = schedule_reminder(reminder)
+            await reminder_service.update_job_id(session, reminder.id, job_id)
+            await update.effective_chat.send_message(
+                f"Reminder set: *{title}*\nAt: {remind_at.strftime('%Y-%m-%d %H:%M')}",
+                parse_mode="Markdown",
+            )
 
-    await update.effective_chat.send_message(f"WhatsApp channel added for {text}!")
-    context.user_data["awaiting_whatsapp"] = False  # type: ignore[index]
+        elif time_type == "absolute":
+            abs_time = str(parsed.get("absolute_time", ""))
+            try:
+                remind_at = datetime.strptime(abs_time, "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except ValueError:
+                await update.effective_chat.send_message(f"Could not parse time: {abs_time}")
+                return
+            reminder = await reminder_service.create_reminder(session, user_id, title, remind_at=remind_at)
+            job_id = schedule_reminder(reminder)
+            await reminder_service.update_job_id(session, reminder.id, job_id)
+            await update.effective_chat.send_message(
+                f"Reminder set: *{title}*\nAt: {remind_at.strftime('%Y-%m-%d %H:%M')}",
+                parse_mode="Markdown",
+            )
+
+        elif time_type == "cron":
+            cron_expr = str(parsed.get("cron_expression", ""))
+            reminder = await reminder_service.create_reminder(session, user_id, title, cron_expression=cron_expr)
+            job_id = schedule_reminder(reminder)
+            await reminder_service.update_job_id(session, reminder.id, job_id)
+            await update.effective_chat.send_message(
+                f"Recurring reminder set: *{title}*\nSchedule: `{cron_expr}`",
+                parse_mode="Markdown",
+            )
+
+        else:
+            await update.effective_chat.send_message("Couldn't figure out when to remind you. Try /remind for the guided flow.")
 
 
 # ── Cancel conversation ────────────────────────────────────────────────
@@ -759,7 +981,9 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("habits", habits_command),
         CommandHandler("streak", streak_command),
         CommandHandler("edithabit", edithabit_command),
+        CommandHandler("testshame", testshame_command),
         CommandHandler("deletehabit", deletehabit_command),
+        CommandHandler("ask", ask_command),
         CommandHandler("channels", channels_command),
         CommandHandler("stats", stats_command),
         CommandHandler("shame", shame_command),
