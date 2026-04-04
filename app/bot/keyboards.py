@@ -60,6 +60,22 @@ def goal_list_keyboard(goals: list[tuple[Goal, int, int]]) -> InlineKeyboardMark
     return InlineKeyboardMarkup(buttons)
 
 
+def goal_edit_keyboard(goals: list[Goal]) -> InlineKeyboardMarkup:
+    buttons = []
+    for g in goals:
+        buttons.append([InlineKeyboardButton(g.name, callback_data=f"editgoal_{g.id}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def goal_edit_field_keyboard(goal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Target count", callback_data=f"gedit_target_{goal_id}")],
+        [InlineKeyboardButton("Daily quota", callback_data=f"gedit_quota_{goal_id}")],
+        [InlineKeyboardButton("Deadline", callback_data=f"gedit_deadline_{goal_id}")],
+        [InlineKeyboardButton("Reminder time", callback_data=f"gedit_time_{goal_id}")],
+    ])
+
+
 def goal_delete_keyboard(goals: list[Goal]) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(f"Delete: {g.name}", callback_data=f"del_goal_{g.id}")]

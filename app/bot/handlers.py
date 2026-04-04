@@ -87,6 +87,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/goal - Create a new goal (guided)\n"
         "/goals - Today's goal progress + log\n"
         "/goalstats - Goal analytics + projections\n"
+        "/editgoal - Edit a goal\n"
         "/deletegoal - Delete a goal\n\n"
         "/channels - Manage notification channels\n"
         "/help - Show this help"
@@ -577,6 +578,24 @@ async def goalstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.effective_chat.send_message("\n".join(lines), parse_mode="Markdown")
 
 
+# ── /editgoal ──────────────────────────────────────────────────────────
+async def editgoal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat:
+        return
+    user_id = str(update.effective_chat.id)
+
+    async with async_session() as session:
+        goals = await goal_service.list_goals(session, user_id)
+
+    if not goals:
+        await update.effective_chat.send_message("No goals yet.")
+        return
+
+    from app.bot.keyboards import goal_edit_keyboard
+    keyboard = goal_edit_keyboard(goals)
+    await update.effective_chat.send_message("Select a goal to edit:", reply_markup=keyboard)
+
+
 # ── /deletegoal ────────────────────────────────────────────────────────
 async def deletegoal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat:
@@ -974,6 +993,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await goal_service.delete_goal(session, goal_id)
         await query.edit_message_text("Goal deleted.")
 
+    elif data.startswith("editgoal_"):
+        goal_id = int(data[9:])
+        from app.bot.keyboards import goal_edit_field_keyboard
+        keyboard = goal_edit_field_keyboard(goal_id)
+        await query.edit_message_text("What do you want to edit?", reply_markup=keyboard)
+
+    elif data.startswith("gedit_"):
+        # Format: gedit_<field>_<goal_id>
+        parts = data.split("_", 2)
+        field = parts[1]
+        goal_id = int(parts[2])
+        if context.user_data is not None:
+            context.user_data["editing_goal_id"] = goal_id  # type: ignore[index]
+            context.user_data["editing_goal_field"] = field  # type: ignore[index]
+        prompts = {
+            "target": "Send the new target count (or `clear` to remove target):",
+            "quota": "Send the new daily quota:",
+            "deadline": "Send the new deadline (YYYY-MM-DD) or `clear` to remove:",
+            "time": "Send the new reminder time (HH:MM) or `clear` to remove:",
+        }
+        await query.edit_message_text(prompts.get(field, "Send the new value:"))
+
     elif data == "add_whatsapp":
         if not update.effective_chat:
             return
@@ -1038,6 +1079,98 @@ async def free_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await update.effective_chat.send_message("Habit not found.")
 
         context.user_data["editing_habit_id"] = None  # type: ignore[index]
+        return
+
+    # Handle goal editing
+    editing_goal_id = context.user_data.get("editing_goal_id")  # type: ignore[union-attr]
+    if editing_goal_id is not None:
+        field = context.user_data.get("editing_goal_field")  # type: ignore[union-attr]
+        user_id = str(update.effective_chat.id)
+
+        async with async_session() as session:
+            goal = await goal_service.get_goal(session, editing_goal_id)
+            if not goal:
+                await update.effective_chat.send_message("Goal not found.")
+                context.user_data["editing_goal_id"] = None  # type: ignore[index]
+                context.user_data["editing_goal_field"] = None  # type: ignore[index]
+                return
+
+            if field == "target":
+                if text.lower() == "clear":
+                    goal.target_count = None
+                else:
+                    try:
+                        goal.target_count = int(text)
+                        if goal.target_count <= 0:
+                            raise ValueError
+                    except ValueError:
+                        await update.effective_chat.send_message("Send a positive number or `clear`.")
+                        return
+                await session.commit()
+                val = goal.target_count if goal.target_count else "none (streak-based)"
+                await update.effective_chat.send_message(
+                    f"Updated *{goal.name}* target to {val}", parse_mode="Markdown"
+                )
+
+            elif field == "quota":
+                try:
+                    goal.daily_quota = int(text)
+                    if goal.daily_quota <= 0:
+                        raise ValueError
+                except ValueError:
+                    await update.effective_chat.send_message("Send a positive number.")
+                    return
+                await session.commit()
+                await update.effective_chat.send_message(
+                    f"Updated *{goal.name}* daily quota to {goal.daily_quota} {goal.unit}",
+                    parse_mode="Markdown",
+                )
+
+            elif field == "deadline":
+                if text.lower() == "clear":
+                    goal.deadline = None
+                else:
+                    try:
+                        goal.deadline = date.fromisoformat(text)
+                    except ValueError:
+                        await update.effective_chat.send_message("Use YYYY-MM-DD format or `clear`.")
+                        return
+                await session.commit()
+                val = str(goal.deadline) if goal.deadline else "removed"
+                await update.effective_chat.send_message(
+                    f"Updated *{goal.name}* deadline to {val}", parse_mode="Markdown"
+                )
+
+            elif field == "time":
+                if text.lower() == "clear":
+                    if goal.apscheduler_job_id:
+                        cancel_job(goal.apscheduler_job_id)
+                    goal.reminder_time = None
+                    goal.apscheduler_job_id = None
+                else:
+                    try:
+                        parts = text.split(":")
+                        new_time = time(int(parts[0]), int(parts[1]))
+                    except (ValueError, IndexError):
+                        await update.effective_chat.send_message("Use HH:MM format or `clear`.")
+                        return
+                    goal.reminder_time = new_time
+                    if goal.apscheduler_job_id:
+                        cancel_job(goal.apscheduler_job_id)
+                    from app.scheduler import schedule_goal
+                    job_id = schedule_goal(
+                        goal.id, goal.name, user_id,
+                        new_time.hour, new_time.minute,
+                    )
+                    goal.apscheduler_job_id = job_id
+                await session.commit()
+                val = goal.reminder_time.strftime("%H:%M") if goal.reminder_time else "removed"
+                await update.effective_chat.send_message(
+                    f"Updated *{goal.name}* reminder to {val}", parse_mode="Markdown"
+                )
+
+        context.user_data["editing_goal_id"] = None  # type: ignore[index]
+        context.user_data["editing_goal_field"] = None  # type: ignore[index]
         return
 
     # Handle WhatsApp phone number
@@ -1287,6 +1420,7 @@ def get_handlers() -> list[CommandHandler | ConversationHandler | CallbackQueryH
         CommandHandler("habits", habits_command),
         CommandHandler("goals", goals_command),
         CommandHandler("goalstats", goalstats_command),
+        CommandHandler("editgoal", editgoal_command),
         CommandHandler("deletegoal", deletegoal_command),
         CommandHandler("streak", streak_command),
         CommandHandler("edithabit", edithabit_command),
